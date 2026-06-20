@@ -3,10 +3,11 @@
 Trading analysis runner — called by the Claude agent to get market data.
 
 Usage:
-    python -m trading_agent.run screen              # screen top movers
-    python -m trading_agent.run analyze TSLA        # full TA on one symbol
-    python -m trading_agent.run quote TSLA AAPL     # quick quotes
+    python -m trading_agent.run screen                          # screen top movers
+    python -m trading_agent.run analyze TSLA                    # full TA on one symbol
+    python -m trading_agent.run quote TSLA AAPL                 # quick quotes
     python -m trading_agent.run size TSLA 45.20 43.80 bull 8000 4000
+    python -m trading_agent.run backtest NVDA TSLA AMD SPY      # backtest strategy
 
 Output is JSON to stdout so Claude can parse and act on it.
 """
@@ -58,6 +59,18 @@ def cmd_size(symbol, entry, stop, bias, account_value, buying_power, atr=None):
     print(json.dumps({"position": pos, "targets": tgt, "validation": val}, indent=2))
 
 
+def cmd_backtest(symbols: list[str], account_value: float = 10_000):
+    from .backtest import run_backtest
+    print(f"Running backtest on: {', '.join(symbols)}", flush=True)
+    results = run_backtest(symbols, account_value)
+    # Print trade log separately so the summary is easy to read
+    trade_log = results.pop("trade_log", [])
+    print("\n=== BACKTEST RESULTS ===")
+    print(json.dumps(results, indent=2, default=str))
+    print(f"\n=== TRADE LOG ({len(trade_log)} trades) ===")
+    print(json.dumps(trade_log, indent=2, default=str))
+
+
 def main():
     args = sys.argv[1:]
     if not args:
@@ -73,6 +86,9 @@ def main():
         cmd_quote(*[s.upper() for s in args[1:]])
     elif cmd == "size" and len(args) >= 7:
         cmd_size(*args[1:])
+    elif cmd == "backtest" and len(args) >= 2:
+        syms = [s.upper() for s in args[1:]]
+        cmd_backtest(syms)
     else:
         print(f"Unknown command or missing args: {args}", file=sys.stderr)
         sys.exit(1)

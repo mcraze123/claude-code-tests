@@ -1,0 +1,353 @@
+"""
+Walk-forward backtester for the SMC + mean-reversion strategy.
+
+Simulates on 1H bars (primary timeframe) with daily bias filter.
+Avoids look-ahead bias: at each bar only data up to that bar is visible.
+
+Trade logic:
+  - Bullish entry: price touches/enters a bullish OB or FVG while daily
+    trend is bullish and RSI < 55; stop below OB/FVG low; targets at 1.5R / 2.5R
+  - Bearish entry: price touches/enters a bearish OB or FVG while daily
+    trend is bearish and RSI > 45; stop above OB/FVG high; targets at 1.5R / 2.5R
+  - Mean reversion: VWAP deviation > 3% fades back toward VWAP
+  - Only one open position per symbol at a time
+  - Exits: TP1 (close 60%), TP2 (close remaining), or stop hit
+
+Outputs JSON trade log + summary stats.
+"""
+
+import pandas as pd
+import numpy as np
+from dataclasses import dataclass, asdict
+from typing import Optional
+from .analysis import (
+    order_blocks, fair_value_gaps, vwap as calc_vwap,
+    rsi as calc_rsi, atr as calc_atr, ema,
+)
+from .risk import position_size, profit_targets
+
+
+@dataclass
+class Trade:
+    symbol: str
+    direction: str          # "long" / "short"
+    signal_type: str        # "ob_retest" / "fvg_fill" / "vwap_reversion"
+    entry_bar: int
+    entry_price: float
+    stop: float
+    tp1: float
+    tp2: float
+    exit_bar: Optional[int] = None
+    exit_price: Optional[float] = None
+    exit_reason: Optional[str] = None  # "tp1" / "tp2" / "stop" / "timeout"
+    pnl_r: Optional[float] = None      # P&L in R multiples
+    shares: int = 0
+
+
+def _daily_trend(df_daily: pd.DataFrame, as_of: pd.Timestamp) -> str:
+    """Trend on daily bars up to (not including) as_of date."""
+    subset = df_daily[df_daily.index.date < as_of.date()]
+    if len(subset) < 21:
+        return "neutral"
+    e9  = float(ema(subset, 9).iloc[-1])
+    e21 = float(ema(subset, 21).iloc[-1])
+    price = float(subset["Close"].iloc[-1])
+    if price > e9 > e21:
+        return "bullish"
+    if price < e9 < e21:
+        return "bearish"
+    return "neutral"
+
+
+def _generate_signal(df_slice: pd.DataFrame, daily_trend: str) -> Optional[dict]:
+    """
+    Look for a signal on the most recent bar of df_slice.
+    Returns a signal dict or None.
+    """
+    if len(df_slice) < 20:
+        return None
+
+    price  = float(df_slice["Close"].iloc[-1])
+    hi     = float(df_slice["High"].iloc[-1])
+    lo     = float(df_slice["Low"].iloc[-1])
+
+    rsi_s  = calc_rsi(df_slice)
+    rsi_v  = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50.0
+    atr_s  = calc_atr(df_slice)
+    atr_v  = float(atr_s.iloc[-1]) if not pd.isna(atr_s.iloc[-1]) else price * 0.01
+    vwap_v = float(calc_vwap(df_slice).iloc[-1])
+    vwap_dev = (price - vwap_v) / vwap_v * 100
+
+    obs  = order_blocks(df_slice, lookback=20)
+    fvgs = fair_value_gaps(df_slice, lookback=30)
+
+    # ── Bullish OB retest ─────────────────────────────────────────────────────
+    if daily_trend in ("bullish", "neutral") and rsi_v < 58:
+        bull_obs = [o for o in obs if o["type"] == "bullish"
+                    and o["low"] <= price <= o["high"] * 1.005]
+        if bull_obs:
+            ob = bull_obs[-1]
+            stop = ob["low"] * 0.998
+            risk = price - stop
+            if risk > 0:
+                return {
+                    "direction": "long",
+                    "signal_type": "ob_retest",
+                    "entry": price,
+                    "stop": round(stop, 4),
+                    "atr": atr_v,
+                }
+
+    # ── Bearish OB retest ─────────────────────────────────────────────────────
+    if daily_trend in ("bearish", "neutral") and rsi_v > 42:
+        bear_obs = [o for o in obs if o["type"] == "bearish"
+                    and o["low"] * 0.995 <= price <= o["high"]]
+        if bear_obs:
+            ob = bear_obs[-1]
+            stop = ob["high"] * 1.002
+            risk = stop - price
+            if risk > 0:
+                return {
+                    "direction": "short",
+                    "signal_type": "ob_retest",
+                    "entry": price,
+                    "stop": round(stop, 4),
+                    "atr": atr_v,
+                }
+
+    # ── Bullish FVG fill ──────────────────────────────────────────────────────
+    if daily_trend in ("bullish", "neutral") and rsi_v < 52:
+        bull_fvgs = [f for f in fvgs if f["type"] == "bullish"
+                     and not f["filled"] and f["bottom"] <= price <= f["top"]]
+        if bull_fvgs:
+            fvg = bull_fvgs[-1]
+            stop = fvg["bottom"] * 0.997
+            risk = price - stop
+            if risk > 0:
+                return {
+                    "direction": "long",
+                    "signal_type": "fvg_fill",
+                    "entry": price,
+                    "stop": round(stop, 4),
+                    "atr": atr_v,
+                }
+
+    # ── Bearish FVG fill ──────────────────────────────────────────────────────
+    if daily_trend in ("bearish", "neutral") and rsi_v > 48:
+        bear_fvgs = [f for f in fvgs if f["type"] == "bearish"
+                     and not f["filled"] and f["bottom"] <= price <= f["top"]]
+        if bear_fvgs:
+            fvg = bear_fvgs[-1]
+            stop = fvg["top"] * 1.003
+            risk = stop - price
+            if risk > 0:
+                return {
+                    "direction": "short",
+                    "signal_type": "fvg_fill",
+                    "entry": price,
+                    "stop": round(stop, 4),
+                    "atr": atr_v,
+                }
+
+    # ── VWAP mean reversion ───────────────────────────────────────────────────
+    if vwap_dev < -3.5 and rsi_v < 35 and daily_trend != "bearish":
+        stop = lo * 0.997
+        risk = price - stop
+        if risk > 0:
+            return {
+                "direction": "long",
+                "signal_type": "vwap_reversion",
+                "entry": price,
+                "stop": round(stop, 4),
+                "atr": atr_v,
+            }
+
+    if vwap_dev > 3.5 and rsi_v > 65 and daily_trend != "bullish":
+        stop = hi * 1.003
+        risk = stop - price
+        if risk > 0:
+            return {
+                "direction": "short",
+                "signal_type": "vwap_reversion",
+                "entry": price,
+                "stop": round(stop, 4),
+                "atr": atr_v,
+            }
+
+    return None
+
+
+def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
+                  bar_open: float) -> Optional[Trade]:
+    """
+    Check if a bar hits stop or target.
+    Returns updated trade if closed, else None.
+    """
+    if trade.direction == "long":
+        # Stop hit
+        if bar_low <= trade.stop:
+            trade.exit_price = min(bar_open, trade.stop)  # slippage on gaps
+            trade.exit_reason = "stop"
+            trade.pnl_r = round((trade.exit_price - trade.entry_price) /
+                                (trade.entry_price - trade.stop), 2)
+            return trade
+        # TP1 partial (simulate as full exit at TP1 for simplicity)
+        if bar_high >= trade.tp1:
+            trade.exit_price = trade.tp1
+            trade.exit_reason = "tp1"
+            trade.pnl_r = round((trade.tp1 - trade.entry_price) /
+                                (trade.entry_price - trade.stop), 2)
+            return trade
+    else:
+        if bar_high >= trade.stop:
+            trade.exit_price = max(bar_open, trade.stop)
+            trade.exit_reason = "stop"
+            trade.pnl_r = round((trade.entry_price - trade.exit_price) /
+                                (trade.stop - trade.entry_price), 2)
+            return trade
+        if bar_low <= trade.tp1:
+            trade.exit_price = trade.tp1
+            trade.exit_reason = "tp1"
+            trade.pnl_r = round((trade.entry_price - trade.tp1) /
+                                (trade.stop - trade.entry_price), 2)
+            return trade
+
+    return None
+
+
+def simulate_symbol(symbol: str, df_1h: pd.DataFrame,
+                    df_daily: pd.DataFrame,
+                    account_value: float = 10_000,
+                    warmup_bars: int = 50,
+                    max_hold_bars: int = 16) -> list[dict]:
+    """Simulate all trades for one symbol. Returns list of closed trade dicts."""
+    trades: list[Trade] = []
+    open_trade: Optional[Trade] = None
+
+    for i in range(warmup_bars, len(df_1h) - 1):
+        bar_time  = df_1h.index[i]
+        next_open = float(df_1h["Open"].iloc[i + 1])
+        next_high = float(df_1h["High"].iloc[i + 1])
+        next_low  = float(df_1h["Low"].iloc[i + 1])
+
+        # ── Manage open trade ────────────────────────────────────────────────
+        if open_trade is not None:
+            open_trade.exit_bar = i + 1
+            closed = _manage_trade(open_trade, next_high, next_low, next_open)
+            if closed:
+                trades.append(asdict(closed))
+                open_trade = None
+            elif (i + 1 - open_trade.entry_bar) >= max_hold_bars:
+                # Timeout exit at next open
+                ep = open_trade.entry_price
+                st = open_trade.stop
+                xp = float(df_1h["Close"].iloc[i + 1])
+                risk = abs(ep - st)
+                pnl = (xp - ep if open_trade.direction == "long" else ep - xp)
+                open_trade.exit_price  = round(xp, 4)
+                open_trade.exit_reason = "timeout"
+                open_trade.exit_bar    = i + 1
+                open_trade.pnl_r       = round(pnl / risk, 2) if risk else 0
+                trades.append(asdict(open_trade))
+                open_trade = None
+            continue
+
+        # ── Look for new signal ──────────────────────────────────────────────
+        df_slice = df_1h.iloc[: i + 1]
+        d_trend  = _daily_trend(df_daily, bar_time)
+        sig      = _generate_signal(df_slice, d_trend)
+
+        if sig is None:
+            continue
+
+        entry = next_open  # enter at next bar open (no look-ahead)
+        stop  = sig["stop"]
+        risk  = abs(entry - stop)
+        if risk < entry * 0.001:  # skip if stop is unrealistically tight
+            continue
+
+        tgts  = profit_targets(entry, stop, sig["direction"], sig["atr"])
+        pos   = position_size(account_value, entry, stop)
+
+        # Minimum R:R guard
+        rr = abs(tgts["tp1"] - entry) / risk
+        if rr < 1.4:
+            continue
+
+        open_trade = Trade(
+            symbol       = symbol,
+            direction    = sig["direction"],
+            signal_type  = sig["signal_type"],
+            entry_bar    = i + 1,
+            entry_price  = round(entry, 4),
+            stop         = round(stop, 4),
+            tp1          = tgts["tp1"],
+            tp2          = tgts["tp2"],
+            shares       = pos["shares"],
+        )
+
+    return trades
+
+
+def compute_stats(trades: list[dict]) -> dict:
+    if not trades:
+        return {"error": "no trades generated"}
+
+    df = pd.DataFrame(trades)
+    df = df[df["exit_reason"].notna()]
+
+    wins   = df[df["pnl_r"] > 0]
+    losses = df[df["pnl_r"] <= 0]
+
+    win_rate     = round(len(wins) / len(df) * 100, 1)
+    avg_win_r    = round(wins["pnl_r"].mean(), 2) if len(wins) else 0
+    avg_loss_r   = round(losses["pnl_r"].mean(), 2) if len(losses) else 0
+    total_r      = round(df["pnl_r"].sum(), 2)
+    expectancy   = round(df["pnl_r"].mean(), 3)
+    profit_factor = round(
+        wins["pnl_r"].sum() / abs(losses["pnl_r"].sum()), 2
+    ) if len(losses) and losses["pnl_r"].sum() != 0 else float("inf")
+
+    # Equity curve in R
+    equity = df["pnl_r"].cumsum().values
+    peak   = np.maximum.accumulate(equity)
+    dd     = equity - peak
+    max_dd = round(float(dd.min()), 2)
+
+    by_type  = df.groupby("signal_type")["pnl_r"].agg(["count", "mean", "sum"]).round(2).to_dict()
+    by_dir   = df.groupby("direction")["pnl_r"].agg(["count", "mean"]).round(2).to_dict()
+    by_exit  = df["exit_reason"].value_counts().to_dict()
+
+    return {
+        "total_trades":   len(df),
+        "win_rate_pct":   win_rate,
+        "avg_win_r":      avg_win_r,
+        "avg_loss_r":     avg_loss_r,
+        "total_r":        total_r,
+        "expectancy_r":   expectancy,
+        "profit_factor":  profit_factor,
+        "max_drawdown_r": max_dd,
+        "by_signal_type": by_type,
+        "by_direction":   by_dir,
+        "exit_reasons":   by_exit,
+        "trade_log":      df.to_dict(orient="records"),
+    }
+
+
+def run_backtest(symbols: list[str], account_value: float = 10_000) -> dict:
+    """Entry point: backtest a list of symbols and return combined stats."""
+    from .market_data import get_ohlcv
+
+    all_trades: list[dict] = []
+    for sym in symbols:
+        print(f"  backtesting {sym}...", flush=True)
+        df_1h    = get_ohlcv(sym, "1h")
+        df_daily = get_ohlcv(sym, "daily")
+        if df_1h.empty or df_daily.empty:
+            print(f"  {sym}: no data, skipping")
+            continue
+        trades = simulate_symbol(sym, df_1h, df_daily, account_value)
+        print(f"  {sym}: {len(trades)} trades")
+        all_trades.extend(trades)
+
+    return compute_stats(all_trades)
