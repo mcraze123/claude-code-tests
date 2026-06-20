@@ -221,7 +221,7 @@ def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
 def simulate_symbol(symbol: str, df_1h: pd.DataFrame,
                     df_daily: pd.DataFrame,
                     account_value: float = 10_000,
-                    warmup_bars: int = 50,
+                    warmup_bars: int = 20,
                     max_hold_bars: int = 16) -> list[dict]:
     """Simulate all trades for one symbol. Returns list of closed trade dicts."""
     trades: list[Trade] = []
@@ -266,7 +266,15 @@ def simulate_symbol(symbol: str, df_1h: pd.DataFrame,
         entry = next_open  # enter at next bar open (no look-ahead)
         stop  = sig["stop"]
         risk  = abs(entry - stop)
-        if risk < entry * 0.001:  # skip if stop is unrealistically tight
+
+        # Stop must be on the correct side of the entry price.
+        # If price moved away between signal bar and entry bar the stop
+        # can end up on the wrong side — skip those.
+        if sig["direction"] == "long"  and stop >= entry:
+            continue
+        if sig["direction"] == "short" and stop <= entry:
+            continue
+        if risk < entry * 0.001:
             continue
 
         tgts  = profit_targets(entry, stop, sig["direction"], sig["atr"])
@@ -274,7 +282,7 @@ def simulate_symbol(symbol: str, df_1h: pd.DataFrame,
 
         # Minimum R:R guard
         rr = abs(tgts["tp1"] - entry) / risk
-        if rr < 1.4:
+        if rr < 1.2:
             continue
 
         open_trade = Trade(

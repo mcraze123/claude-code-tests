@@ -29,7 +29,7 @@ MIN_SCORE_TO_TRADE = 65
 TIMEFRAME_PARAMS = {
     "daily": {"period": "90d", "interval": "1d"},
     "4h":    {"period": "30d", "interval": "1h"},   # resampled from 1h
-    "1h":    {"period": "7d",  "interval": "1h"},
+    "1h":    {"period": "60d", "interval": "1h"},
     "15m":   {"period": "5d",  "interval": "15m"},
 }
 
