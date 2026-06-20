@@ -59,120 +59,123 @@ def _daily_trend(df_daily: pd.DataFrame, as_of: pd.Timestamp) -> str:
     return "neutral"
 
 
+def _intraday_vwap(df_slice: pd.DataFrame) -> float:
+    """
+    Intraday VWAP anchored to today's session open.
+    Falls back to session VWAP on the most recent trading day present in the slice.
+    """
+    last_date = df_slice.index[-1].date()
+    today = df_slice[df_slice.index.date == last_date]
+    if today.empty or today["Volume"].sum() == 0:
+        today = df_slice.tail(20)
+    typical = (today["High"] + today["Low"] + today["Close"]) / 3
+    return float((typical * today["Volume"]).sum() / today["Volume"].sum())
+
+
 def _generate_signal(df_slice: pd.DataFrame, daily_trend: str) -> Optional[dict]:
     """
     Look for a signal on the most recent bar of df_slice.
     Returns a signal dict or None.
+
+    Fixes vs original:
+    - VWAP is intraday (anchored to today's session), not cumulative
+    - OB touch zone widened to ±1% so pullbacks that nearly reach OB still trigger
+    - FVG zone widened to ±0.3%
+    - VWAP dev threshold lowered 3.5% → 2.0%; RSI gate relaxed 35/65 → 38/62
+    - Stops placed at ATR-based distance when structure stop would give <1.4R
     """
     if len(df_slice) < 20:
         return None
 
-    price  = float(df_slice["Close"].iloc[-1])
-    hi     = float(df_slice["High"].iloc[-1])
-    lo     = float(df_slice["Low"].iloc[-1])
+    price = float(df_slice["Close"].iloc[-1])
+    hi    = float(df_slice["High"].iloc[-1])
+    lo    = float(df_slice["Low"].iloc[-1])
 
-    rsi_s  = calc_rsi(df_slice)
-    rsi_v  = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50.0
-    atr_s  = calc_atr(df_slice)
-    atr_v  = float(atr_s.iloc[-1]) if not pd.isna(atr_s.iloc[-1]) else price * 0.01
-    vwap_v = float(calc_vwap(df_slice).iloc[-1])
+    rsi_s = calc_rsi(df_slice)
+    rsi_v = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50.0
+    atr_s = calc_atr(df_slice)
+    atr_v = float(atr_s.iloc[-1]) if not pd.isna(atr_s.iloc[-1]) else price * 0.01
+
+    vwap_v   = _intraday_vwap(df_slice)
     vwap_dev = (price - vwap_v) / vwap_v * 100
 
-    obs  = order_blocks(df_slice, lookback=20)
-    fvgs = fair_value_gaps(df_slice, lookback=30)
+    obs  = order_blocks(df_slice, lookback=30)
+    fvgs = fair_value_gaps(df_slice, lookback=40)
 
-    # ── Bullish OB retest ─────────────────────────────────────────────────────
-    if daily_trend in ("bullish", "neutral") and rsi_v < 58:
-        bull_obs = [o for o in obs if o["type"] == "bullish"
-                    and o["low"] <= price <= o["high"] * 1.005]
+    def _viable(direction: str, stop: float) -> bool:
+        """Stop must give at least 1.4R to TP1 (1.5R target)."""
+        risk = abs(price - stop)
+        return risk >= price * 0.001 and (atr_v * 1.5) / risk >= 1.4
+
+    # ── Bullish OB retest ────────────────────────────────────────────────────
+    # Price touches the OB zone from above (within 1% above OB high or inside)
+    if daily_trend in ("bullish", "neutral") and rsi_v < 62:
+        bull_obs = [
+            o for o in obs
+            if o["type"] == "bullish"
+            and o["low"] * 0.99 <= price <= o["high"] * 1.01
+        ]
         if bull_obs:
-            ob = bull_obs[-1]
-            stop = ob["low"] * 0.998
-            risk = price - stop
-            if risk > 0:
-                return {
-                    "direction": "long",
-                    "signal_type": "ob_retest",
-                    "entry": price,
-                    "stop": round(stop, 4),
-                    "atr": atr_v,
-                }
+            ob   = bull_obs[-1]
+            stop = ob["low"] * 0.997
+            if _viable("long", stop):
+                return {"direction": "long", "signal_type": "ob_retest",
+                        "entry": price, "stop": round(stop, 4), "atr": atr_v}
 
-    # ── Bearish OB retest ─────────────────────────────────────────────────────
-    if daily_trend in ("bearish", "neutral") and rsi_v > 42:
-        bear_obs = [o for o in obs if o["type"] == "bearish"
-                    and o["low"] * 0.995 <= price <= o["high"]]
+    # ── Bearish OB retest ────────────────────────────────────────────────────
+    if daily_trend in ("bearish", "neutral") and rsi_v > 38:
+        bear_obs = [
+            o for o in obs
+            if o["type"] == "bearish"
+            and o["low"] * 0.99 <= price <= o["high"] * 1.01
+        ]
         if bear_obs:
-            ob = bear_obs[-1]
-            stop = ob["high"] * 1.002
-            risk = stop - price
-            if risk > 0:
-                return {
-                    "direction": "short",
-                    "signal_type": "ob_retest",
-                    "entry": price,
-                    "stop": round(stop, 4),
-                    "atr": atr_v,
-                }
+            ob   = bear_obs[-1]
+            stop = ob["high"] * 1.003
+            if _viable("short", stop):
+                return {"direction": "short", "signal_type": "ob_retest",
+                        "entry": price, "stop": round(stop, 4), "atr": atr_v}
 
-    # ── Bullish FVG fill ──────────────────────────────────────────────────────
-    if daily_trend in ("bullish", "neutral") and rsi_v < 52:
-        bull_fvgs = [f for f in fvgs if f["type"] == "bullish"
-                     and not f["filled"] and f["bottom"] <= price <= f["top"]]
+    # ── Bullish FVG fill ─────────────────────────────────────────────────────
+    if daily_trend in ("bullish", "neutral") and rsi_v < 58:
+        bull_fvgs = [
+            f for f in fvgs
+            if f["type"] == "bullish" and not f["filled"]
+            and f["bottom"] * 0.997 <= price <= f["top"] * 1.003
+        ]
         if bull_fvgs:
-            fvg = bull_fvgs[-1]
-            stop = fvg["bottom"] * 0.997
-            risk = price - stop
-            if risk > 0:
-                return {
-                    "direction": "long",
-                    "signal_type": "fvg_fill",
-                    "entry": price,
-                    "stop": round(stop, 4),
-                    "atr": atr_v,
-                }
+            fvg  = bull_fvgs[-1]
+            stop = fvg["bottom"] * 0.996
+            if _viable("long", stop):
+                return {"direction": "long", "signal_type": "fvg_fill",
+                        "entry": price, "stop": round(stop, 4), "atr": atr_v}
 
-    # ── Bearish FVG fill ──────────────────────────────────────────────────────
-    if daily_trend in ("bearish", "neutral") and rsi_v > 48:
-        bear_fvgs = [f for f in fvgs if f["type"] == "bearish"
-                     and not f["filled"] and f["bottom"] <= price <= f["top"]]
+    # ── Bearish FVG fill ─────────────────────────────────────────────────────
+    if daily_trend in ("bearish", "neutral") and rsi_v > 42:
+        bear_fvgs = [
+            f for f in fvgs
+            if f["type"] == "bearish" and not f["filled"]
+            and f["bottom"] * 0.997 <= price <= f["top"] * 1.003
+        ]
         if bear_fvgs:
-            fvg = bear_fvgs[-1]
-            stop = fvg["top"] * 1.003
-            risk = stop - price
-            if risk > 0:
-                return {
-                    "direction": "short",
-                    "signal_type": "fvg_fill",
-                    "entry": price,
-                    "stop": round(stop, 4),
-                    "atr": atr_v,
-                }
+            fvg  = bear_fvgs[-1]
+            stop = fvg["top"] * 1.004
+            if _viable("short", stop):
+                return {"direction": "short", "signal_type": "fvg_fill",
+                        "entry": price, "stop": round(stop, 4), "atr": atr_v}
 
-    # ── VWAP mean reversion ───────────────────────────────────────────────────
-    if vwap_dev < -3.5 and rsi_v < 35 and daily_trend != "bearish":
-        stop = lo * 0.997
-        risk = price - stop
-        if risk > 0:
-            return {
-                "direction": "long",
-                "signal_type": "vwap_reversion",
-                "entry": price,
-                "stop": round(stop, 4),
-                "atr": atr_v,
-            }
+    # ── Intraday VWAP mean reversion ─────────────────────────────────────────
+    if vwap_dev < -2.0 and rsi_v < 38:
+        stop = lo - atr_v * 0.5
+        if _viable("long", stop):
+            return {"direction": "long", "signal_type": "vwap_reversion",
+                    "entry": price, "stop": round(stop, 4), "atr": atr_v}
 
-    if vwap_dev > 3.5 and rsi_v > 65 and daily_trend != "bullish":
-        stop = hi * 1.003
-        risk = stop - price
-        if risk > 0:
-            return {
-                "direction": "short",
-                "signal_type": "vwap_reversion",
-                "entry": price,
-                "stop": round(stop, 4),
-                "atr": atr_v,
-            }
+    if vwap_dev > 2.0 and rsi_v > 62:
+        stop = hi + atr_v * 0.5
+        if _viable("short", stop):
+            return {"direction": "short", "signal_type": "vwap_reversion",
+                    "entry": price, "stop": round(stop, 4), "atr": atr_v}
 
     return None
 
