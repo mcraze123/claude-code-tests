@@ -337,6 +337,131 @@ def compute_stats(trades: list[dict]) -> dict:
     }
 
 
+def plot_results(stats: dict, out_path: str = "backtest_results.png") -> str:
+    """
+    Generate a 4-panel chart:
+      1. Equity curve (cumulative R)
+      2. Drawdown over time
+      3. P&L distribution (histogram)
+      4. Win/loss breakdown by signal type
+    Saves to out_path and returns the path.
+    """
+    import matplotlib
+    matplotlib.use("Agg")  # headless — no display required
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+
+    trades = stats.get("trade_log", [])
+    if not trades:
+        raise ValueError("No trades to plot")
+
+    df = pd.DataFrame(trades)
+    pnl  = df["pnl_r"].values
+    equity = np.cumsum(pnl)
+    peak   = np.maximum.accumulate(equity)
+    dd     = equity - peak
+    trade_nums = np.arange(1, len(pnl) + 1)
+
+    fig = plt.figure(figsize=(14, 10))
+    fig.patch.set_facecolor("#0d1117")
+    gs = gridspec.GridSpec(2, 2, hspace=0.42, wspace=0.32)
+
+    COLORS = {
+        "green":  "#2ecc71",
+        "red":    "#e74c3c",
+        "blue":   "#3498db",
+        "orange": "#e67e22",
+        "grey":   "#8b949e",
+        "bg":     "#161b22",
+        "text":   "#c9d1d9",
+    }
+
+    def _style(ax, title):
+        ax.set_facecolor(COLORS["bg"])
+        ax.set_title(title, color=COLORS["text"], fontsize=11, pad=8)
+        ax.tick_params(colors=COLORS["grey"], labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#30363d")
+        ax.yaxis.label.set_color(COLORS["grey"])
+        ax.xaxis.label.set_color(COLORS["grey"])
+
+    # ── 1. Equity curve ───────────────────────────────────────────────────────
+    ax1 = fig.add_subplot(gs[0, 0])
+    color = COLORS["green"] if equity[-1] >= 0 else COLORS["red"]
+    ax1.plot(trade_nums, equity, color=color, linewidth=1.8)
+    ax1.axhline(0, color=COLORS["grey"], linewidth=0.8, linestyle="--")
+    ax1.fill_between(trade_nums, equity, 0,
+                     where=(equity >= 0), alpha=0.15, color=COLORS["green"])
+    ax1.fill_between(trade_nums, equity, 0,
+                     where=(equity < 0),  alpha=0.15, color=COLORS["red"])
+    ax1.set_xlabel("Trade #")
+    ax1.set_ylabel("Cumulative R")
+    total_r  = stats.get("total_r", 0)
+    exp_r    = stats.get("expectancy_r", 0)
+    _style(ax1, f"Equity Curve  (total {total_r:+.1f}R | E={exp_r:+.3f}R/trade)")
+
+    # ── 2. Drawdown ───────────────────────────────────────────────────────────
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.fill_between(trade_nums, dd, 0, color=COLORS["red"], alpha=0.6)
+    ax2.plot(trade_nums, dd, color=COLORS["red"], linewidth=1.0)
+    ax2.axhline(0, color=COLORS["grey"], linewidth=0.8, linestyle="--")
+    ax2.set_xlabel("Trade #")
+    ax2.set_ylabel("Drawdown (R)")
+    max_dd = stats.get("max_drawdown_r", 0)
+    _style(ax2, f"Drawdown  (max {max_dd:.1f}R)")
+
+    # ── 3. P&L distribution ───────────────────────────────────────────────────
+    ax3 = fig.add_subplot(gs[1, 0])
+    wins_pnl   = pnl[pnl > 0]
+    losses_pnl = pnl[pnl <= 0]
+    bins = np.linspace(pnl.min() - 0.2, pnl.max() + 0.2, 30)
+    ax3.hist(losses_pnl, bins=bins, color=COLORS["red"],   alpha=0.75, label="Losses")
+    ax3.hist(wins_pnl,   bins=bins, color=COLORS["green"], alpha=0.75, label="Wins")
+    ax3.axvline(0, color=COLORS["grey"], linewidth=1.0, linestyle="--")
+    ax3.axvline(float(np.mean(pnl)), color=COLORS["blue"],
+                linewidth=1.4, linestyle="-", label=f"Mean {np.mean(pnl):+.2f}R")
+    ax3.set_xlabel("P&L (R)")
+    ax3.set_ylabel("Frequency")
+    ax3.legend(fontsize=7, facecolor=COLORS["bg"], labelcolor=COLORS["text"])
+    wr = stats.get("win_rate_pct", 0)
+    pf = stats.get("profit_factor", 0)
+    _style(ax3, f"P&L Distribution  (WR={wr}% | PF={pf})")
+
+    # ── 4. By signal type ─────────────────────────────────────────────────────
+    ax4 = fig.add_subplot(gs[1, 1])
+    by_type = stats.get("by_signal_type", {})
+    sig_labels = list(by_type.get("count", {}).keys())
+    if sig_labels:
+        counts   = [by_type["count"].get(s, 0)   for s in sig_labels]
+        mean_pnl = [by_type["mean"].get(s, 0)     for s in sig_labels]
+        x = np.arange(len(sig_labels))
+        bar_colors = [COLORS["green"] if v >= 0 else COLORS["red"] for v in mean_pnl]
+        bars = ax4.bar(x, mean_pnl, color=bar_colors, alpha=0.8, width=0.5)
+        ax4.set_xticks(x)
+        short_labels = [s.replace("_retest","_OB").replace("_fill","_FVG")
+                         .replace("vwap_reversion","VWAP Rev") for s in sig_labels]
+        ax4.set_xticklabels(short_labels, fontsize=8)
+        ax4.axhline(0, color=COLORS["grey"], linewidth=0.8, linestyle="--")
+        ax4.set_ylabel("Avg R per trade")
+        for bar, cnt in zip(bars, counts):
+            ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                     f"n={cnt}", ha="center", va="bottom",
+                     color=COLORS["text"], fontsize=7)
+    _style(ax4, "Performance by Signal Type")
+
+    # ── Title ─────────────────────────────────────────────────────────────────
+    n = stats.get("total_trades", 0)
+    fig.suptitle(
+        f"Backtest Results  —  {n} trades  |  "
+        f"WR {wr}%  |  Expectancy {exp_r:+.3f}R  |  Max DD {max_dd:.1f}R",
+        color=COLORS["text"], fontsize=12, y=0.98,
+    )
+
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close()
+    return out_path
+
+
 def run_backtest(symbols: list[str], account_value: float = 10_000) -> dict:
     """Entry point: backtest a list of symbols and return combined stats."""
     from .market_data import get_ohlcv

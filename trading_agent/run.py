@@ -59,16 +59,19 @@ def cmd_size(symbol, entry, stop, bias, account_value, buying_power, atr=None):
     print(json.dumps({"position": pos, "targets": tgt, "validation": val}, indent=2))
 
 
-def cmd_backtest(symbols: list[str], account_value: float = 10_000):
-    from .backtest import run_backtest
+def cmd_backtest(symbols: list[str], plot: bool = False, account_value: float = 10_000):
+    from .backtest import run_backtest, plot_results
     print(f"Running backtest on: {', '.join(symbols)}", flush=True)
     results = run_backtest(symbols, account_value)
-    # Print trade log separately so the summary is easy to read
     trade_log = results.pop("trade_log", [])
     print("\n=== BACKTEST RESULTS ===")
     print(json.dumps(results, indent=2, default=str))
     print(f"\n=== TRADE LOG ({len(trade_log)} trades) ===")
     print(json.dumps(trade_log, indent=2, default=str))
+    if plot and trade_log:
+        results["trade_log"] = trade_log  # restore for plot
+        path = plot_results(results, out_path="backtest_results.png")
+        print(f"\nChart saved → {path}")
 
 
 def main():
@@ -87,8 +90,10 @@ def main():
     elif cmd == "size" and len(args) >= 7:
         cmd_size(*args[1:])
     elif cmd == "backtest" and len(args) >= 2:
-        syms = [s.upper() for s in args[1:]]
-        cmd_backtest(syms)
+        remaining = [s for s in args[1:] if s != "--plot"]
+        do_plot   = "--plot" in args
+        syms      = [s.upper() for s in remaining]
+        cmd_backtest(syms, plot=do_plot)
     else:
         print(f"Unknown command or missing args: {args}", file=sys.stderr)
         sys.exit(1)
