@@ -13,6 +13,9 @@ def get_ohlcv(symbol: str, timeframe: str) -> pd.DataFrame:
     """Fetch OHLCV for a symbol at the given timeframe key."""
     params = TIMEFRAME_PARAMS.get(timeframe, TIMEFRAME_PARAMS["1h"])
     try:
+        import logging, warnings
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+        warnings.filterwarnings("ignore")
         df = yf.download(
             symbol,
             period=params["period"],
