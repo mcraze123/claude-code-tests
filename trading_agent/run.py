@@ -59,6 +59,83 @@ def cmd_size(symbol, entry, stop, bias, account_value, buying_power, atr=None):
     print(json.dumps({"position": pos, "targets": tgt, "validation": val}, indent=2))
 
 
+def cmd_diagnose(symbol: str):
+    """Print exactly what the signal detector sees on the last 60 bars of real data."""
+    from .market_data import get_ohlcv
+    from .analysis import order_blocks, fair_value_gaps, rsi as calc_rsi, atr as calc_atr
+    from .backtest import _intraday_vwap, _generate_signal
+
+    df = get_ohlcv(symbol, "1h")
+    if df.empty:
+        print(f"No data for {symbol}")
+        return
+
+    print(f"{symbol}  —  {len(df)} 1H bars  ({df.index[0].date()} → {df.index[-1].date()})")
+    print(f"Price range: {df['Close'].min():.2f} – {df['Close'].max():.2f}")
+    print()
+
+    signals_found = 0
+    # Scan last 60 bars
+    start = max(30, len(df) - 60)
+    for i in range(start, len(df) - 1):
+        sl    = df.iloc[:i + 1]
+        price = float(sl["Close"].iloc[-1])
+        obs   = order_blocks(sl, lookback=30)
+        fvgs  = fair_value_gaps(sl, lookback=40)
+        vwap_v = _intraday_vwap(sl)
+        rsi_v  = float(calc_rsi(sl).iloc[-1])
+        atr_v  = float(calc_atr(sl).iloc[-1])
+        vwap_dev = (price - vwap_v) / vwap_v * 100
+
+        bull_ob_near = [o for o in obs if o["type"] == "bullish"
+                        and o["low"] * 0.99 <= price <= o["high"] * 1.01]
+        bear_ob_near = [o for o in obs if o["type"] == "bearish"
+                        and o["low"] * 0.99 <= price <= o["high"] * 1.01]
+        bull_fvg_near = [f for f in fvgs if f["type"] == "bullish" and not f["filled"]
+                         and f["bottom"] * 0.997 <= price <= f["top"] * 1.003]
+        bear_fvg_near = [f for f in fvgs if f["type"] == "bearish" and not f["filled"]
+                         and f["bottom"] * 0.997 <= price <= f["top"] * 1.003]
+
+        sig = _generate_signal(sl, "neutral")
+        if sig or bull_ob_near or bear_ob_near or bull_fvg_near or bear_fvg_near or abs(vwap_dev) > 2.0:
+            signals_found += 1
+            bar_time = sl.index[-1].strftime("%m-%d %H:%M")
+            print(f"  bar {i:3d} {bar_time}  price={price:.2f}  RSI={rsi_v:.0f}  "
+                  f"ATR={atr_v:.3f}  VWAP_dev={vwap_dev:+.1f}%")
+            print(f"    OBs total={len(obs)}  bull_near={len(bull_ob_near)}  bear_near={len(bear_ob_near)}")
+            print(f"    FVGs total={len(fvgs)}  bull_near={len(bull_fvg_near)}  bear_near={len(bear_fvg_near)}")
+            if sig:
+                print(f"    ✓ SIGNAL: {sig['signal_type']} {sig['direction']}  "
+                      f"stop={sig['stop']}  atr={sig['atr']:.3f}")
+            else:
+                # Show why each signal type failed
+                reasons = []
+                if bull_ob_near and rsi_v >= 62:
+                    reasons.append(f"bull OB blocked: RSI {rsi_v:.0f} ≥ 62")
+                if bull_fvg_near and rsi_v >= 58:
+                    reasons.append(f"bull FVG blocked: RSI {rsi_v:.0f} ≥ 58")
+                if vwap_dev < -2.0 and rsi_v >= 38:
+                    reasons.append(f"VWAP long blocked: RSI {rsi_v:.0f} ≥ 38")
+                if vwap_dev > 2.0 and rsi_v <= 62:
+                    reasons.append(f"VWAP short blocked: RSI {rsi_v:.0f} ≤ 62")
+                if reasons:
+                    print(f"    ✗ near signal but blocked: {'; '.join(reasons)}")
+            print()
+
+    if signals_found == 0:
+        print("No near-signal bars found in last 60 bars.")
+        print(f"\nSample bar stats (last bar):")
+        sl = df
+        obs  = order_blocks(sl, lookback=30)
+        fvgs = fair_value_gaps(sl, lookback=40)
+        print(f"  OBs found (lookback=30): {len(obs)}")
+        print(f"  FVGs found (lookback=40): {len(fvgs)}")
+        price = float(sl["Close"].iloc[-1])
+        for o in obs[:5]:
+            dist = (price - o["mid"]) / price * 100
+            print(f"  OB {o['type']:8s}  {o['low']:.2f}–{o['high']:.2f}  dist from price: {dist:+.1f}%")
+
+
 def cmd_backtest(symbols: list[str], plot: bool = False, account_value: float = 10_000):
     from .backtest import run_backtest, plot_results
     print(f"Running backtest on: {', '.join(symbols)}", flush=True)
@@ -89,6 +166,8 @@ def main():
         cmd_quote(*[s.upper() for s in args[1:]])
     elif cmd == "size" and len(args) >= 7:
         cmd_size(*args[1:])
+    elif cmd == "diagnose" and len(args) >= 2:
+        cmd_diagnose(args[1].upper())
     elif cmd == "backtest" and len(args) >= 2:
         remaining = [s for s in args[1:] if s != "--plot"]
         do_plot   = "--plot" in args
