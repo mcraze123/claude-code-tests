@@ -13,16 +13,21 @@ def get_ohlcv(symbol: str, timeframe: str) -> pd.DataFrame:
     """Fetch OHLCV for a symbol at the given timeframe key."""
     params = TIMEFRAME_PARAMS.get(timeframe, TIMEFRAME_PARAMS["1h"])
     try:
-        import logging, warnings
+        import logging, warnings, sys
+        from io import StringIO
+        from contextlib import redirect_stdout, redirect_stderr
         logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+        logging.getLogger("peewee").setLevel(logging.CRITICAL)
         warnings.filterwarnings("ignore")
-        df = yf.download(
-            symbol,
-            period=params["period"],
-            interval=params["interval"],
-            progress=False,
-            auto_adjust=True,
-        )
+        sink = StringIO()
+        with redirect_stdout(sink), redirect_stderr(sink):
+            df = yf.download(
+                symbol,
+                period=params["period"],
+                interval=params["interval"],
+                progress=False,
+                auto_adjust=True,
+            )
     except Exception:
         return pd.DataFrame()
 
