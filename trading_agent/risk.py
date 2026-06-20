@@ -38,7 +38,7 @@ def profit_targets(entry: float, stop: float, bias: str, atr_val: float = None) 
       TP3 = 4R    (or 3× ATR)  — runner
     """
     risk = abs(entry - stop)
-    direction = 1 if bias == "bullish" else -1
+    direction = 1 if bias in ("bullish", "long") else -1
 
     if atr_val and atr_val > 0:
         tp1 = entry + direction * atr_val * 1.0

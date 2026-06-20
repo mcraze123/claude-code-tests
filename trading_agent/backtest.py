@@ -33,11 +33,13 @@ class Trade:
     direction: str          # "long" / "short"
     signal_type: str        # "ob_retest" / "fvg_fill" / "vwap_reversion"
     entry_bar: int
+    entry_time: str
     entry_price: float
     stop: float
     tp1: float
     tp2: float
     exit_bar: Optional[int] = None
+    exit_time: Optional[str] = None
     exit_price: Optional[float] = None
     exit_reason: Optional[str] = None  # "tp1" / "tp2" / "stop" / "timeout"
     pnl_r: Optional[float] = None      # P&L in R multiples
@@ -226,6 +228,10 @@ def simulate_symbol(symbol: str, df_1h: pd.DataFrame,
     """Simulate all trades for one symbol. Returns list of closed trade dicts."""
     trades: list[Trade] = []
     open_trade: Optional[Trade] = None
+    cooldown_until: int = 0   # bar index after which we can take a new trade
+
+    def _ts(bar_idx: int) -> str:
+        return str(df_1h.index[bar_idx]) if bar_idx < len(df_1h) else ""
 
     for i in range(warmup_bars, len(df_1h) - 1):
         bar_time  = df_1h.index[i]
@@ -238,21 +244,28 @@ def simulate_symbol(symbol: str, df_1h: pd.DataFrame,
             open_trade.exit_bar = i + 1
             closed = _manage_trade(open_trade, next_high, next_low, next_open)
             if closed:
+                closed.exit_time = _ts(i + 1)
                 trades.append(asdict(closed))
+                cooldown_until = i + 4   # 4-bar cooldown after any close
                 open_trade = None
             elif (i + 1 - open_trade.entry_bar) >= max_hold_bars:
-                # Timeout exit at next open
-                ep = open_trade.entry_price
-                st = open_trade.stop
-                xp = float(df_1h["Close"].iloc[i + 1])
+                ep  = open_trade.entry_price
+                st  = open_trade.stop
+                xp  = float(df_1h["Close"].iloc[i + 1])
                 risk = abs(ep - st)
-                pnl = (xp - ep if open_trade.direction == "long" else ep - xp)
+                pnl  = (xp - ep if open_trade.direction == "long" else ep - xp)
                 open_trade.exit_price  = round(xp, 4)
                 open_trade.exit_reason = "timeout"
                 open_trade.exit_bar    = i + 1
+                open_trade.exit_time   = _ts(i + 1)
                 open_trade.pnl_r       = round(pnl / risk, 2) if risk else 0
                 trades.append(asdict(open_trade))
+                cooldown_until = i + 4
                 open_trade = None
+            continue
+
+        # ── Cooldown guard ───────────────────────────────────────────────────
+        if i < cooldown_until:
             continue
 
         # ── Look for new signal ──────────────────────────────────────────────
@@ -268,8 +281,8 @@ def simulate_symbol(symbol: str, df_1h: pd.DataFrame,
         risk  = abs(entry - stop)
 
         # Stop must be on the correct side of the entry price.
-        # If price moved away between signal bar and entry bar the stop
-        # can end up on the wrong side — skip those.
+        # If price moved between signal bar and entry bar the stop can
+        # land on the wrong side — skip those.
         if sig["direction"] == "long"  and stop >= entry:
             continue
         if sig["direction"] == "short" and stop <= entry:
@@ -290,6 +303,7 @@ def simulate_symbol(symbol: str, df_1h: pd.DataFrame,
             direction    = sig["direction"],
             signal_type  = sig["signal_type"],
             entry_bar    = i + 1,
+            entry_time   = _ts(i + 1),
             entry_price  = round(entry, 4),
             stop         = round(stop, 4),
             tp1          = tgts["tp1"],
