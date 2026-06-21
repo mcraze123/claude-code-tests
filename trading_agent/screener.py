@@ -9,7 +9,7 @@ from .analysis import full_analysis
 from .config import MIN_PRICE, MAX_PRICE, MIN_AVG_DAILY_VOLUME, MIN_RELATIVE_VOLUME
 
 
-def score_setup(mover: dict, ta: dict) -> dict:
+def score_setup(mover: dict, ta: dict, sentiment: dict = None) -> dict:
     """
     Score a candidate 0–100 based on:
       - Multi-TF trend alignment        (40 pts)
@@ -18,6 +18,7 @@ def score_setup(mover: dict, ta: dict) -> dict:
       - Order block / FVG at price       (15 pts)
       - Liquidity & BOS signals          (10 pts)
       - RSI extremes                     (10 pts)
+      - Social sentiment boost           (up to 15 pts, optional)
     Returns total score, list of signal strings, and directional bias.
     """
     score = 0
@@ -128,18 +129,69 @@ def score_setup(mover: dict, ta: dict) -> dict:
         g = daily_gaps[-1]
         signals.append(f"unfilled daily gap {g['type']} ({g['gap_pct']:+.1f}%) at {g['level']}")
 
+    # ── Social sentiment bonus (up to 15 pts) ────────────────────────────────
+    if sentiment:
+        s_score  = sentiment.get("composite_score", 50.0)
+        st_bull  = sentiment.get("stocktwits", {}).get("bull_pct", 50.0)
+        st_vol   = sentiment.get("stocktwits", {}).get("volume", 0)
+        news_sent = sentiment.get("news", {}).get("sentiment", "neutral")
+
+        if s_score >= 75:
+            score += 15
+            signals.append(f"high social buzz (sentiment {s_score:.0f}/100)")
+        elif s_score >= 60:
+            score += 8
+            signals.append(f"elevated social sentiment ({s_score:.0f}/100)")
+        elif s_score >= 45:
+            score += 3
+
+        # Directional weighting from StockTwits (need volume to trust it)
+        if st_vol >= 5:
+            if st_bull >= 68:
+                bull += 1
+                signals.append(f"StockTwits {st_bull:.0f}% bullish ({st_vol} msgs)")
+            elif st_bull <= 32:
+                bear += 1
+                signals.append(f"StockTwits {st_bull:.0f}% bullish (bearish skew, {st_vol} msgs)")
+
+        # News sentiment directional nudge
+        if news_sent == "bullish":
+            bull += 1
+            signals.append("news sentiment bullish")
+        elif news_sent == "bearish":
+            bear += 1
+            signals.append("news sentiment bearish")
+
     bias = "bullish" if bull > bear else ("bearish" if bear > bull else "neutral")
     return {"total": min(100, score), "signals": signals, "bias": bias}
 
 
-def run_screen(max_candidates: int = 20) -> list[dict]:
+def run_screen(max_candidates: int = 20, with_sentiment: bool = False) -> list[dict]:
     """
-    Full screen: top movers → TA → scoring.
-    Returns list sorted by score descending.
+    Full screen: top movers → (optional social discovery) → TA → scoring.
+
+    with_sentiment=True fetches StockTwits + Reddit + Yahoo news for each
+    candidate and boosts scores accordingly.  Also discovers additional
+    tickers from StockTwits trending and WSB hot posts.
+    Note: Google Trends is NOT fetched here (too slow per-ticker);
+    call get_google_trends() separately for a batch if desired.
     """
     movers = get_top_movers(30)
-    results = []
 
+    # Social ticker discovery — surfaces tickers not already in top movers
+    if with_sentiment:
+        from .sentiment import get_trending_tickers
+        social_tickers = get_trending_tickers()
+        existing = {m["symbol"] for m in movers if m.get("symbol")}
+        extras   = [t for t in social_tickers if t not in existing]
+        for sym in extras[:15]:
+            q = get_quote(sym)
+            price = q.get("price")
+            if price and MIN_PRICE <= price <= MAX_PRICE:
+                q.setdefault("move_score", 0)   # social tickers start with base score
+                movers.append(q)
+
+    results = []
     for m in movers[:max_candidates]:
         sym = m.get("symbol")
         if not sym:
@@ -151,18 +203,31 @@ def run_screen(max_candidates: int = 20) -> list[dict]:
                 "1h":    get_ohlcv(sym, "1h"),
                 "15m":   get_ohlcv(sym, "15m"),
             }
-            ta = full_analysis(sym, df_map)
-            scored = score_setup(m, ta)
-            results.append({
-                "symbol": sym,
-                "price": m.get("price"),
+            ta        = full_analysis(sym, df_map)
+            sentiment = None
+            if with_sentiment:
+                from .sentiment import score_sentiment
+                sentiment = score_sentiment(sym, fetch_trends=False)
+            scored = score_setup(m, ta, sentiment=sentiment)
+            entry = {
+                "symbol":     sym,
+                "price":      m.get("price"),
                 "pct_change": m.get("pct_change"),
                 "rel_volume": m.get("rel_volume"),
-                "score": scored["total"],
-                "bias": scored["bias"],
-                "signals": scored["signals"],
-                "ta": ta,
-            })
+                "score":      scored["total"],
+                "bias":       scored["bias"],
+                "signals":    scored["signals"],
+                "ta":         ta,
+            }
+            if sentiment:
+                entry["sentiment"] = {
+                    "composite":  sentiment["composite_score"],
+                    "st_bull_pct": sentiment["stocktwits"]["bull_pct"],
+                    "st_volume":   sentiment["stocktwits"]["volume"],
+                    "reddit_mentions": sentiment["reddit"]["mentions"],
+                    "news":        sentiment["news"]["sentiment"],
+                }
+            results.append(entry)
         except Exception:
             continue
 

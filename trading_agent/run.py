@@ -3,12 +3,14 @@
 Trading analysis runner — called by the Claude agent to get market data.
 
 Usage:
-    python -m trading_agent.run screen                          # screen top movers
-    python -m trading_agent.run analyze TSLA                    # full TA on one symbol
-    python -m trading_agent.run quote TSLA AAPL                 # quick quotes
+    python -m trading_agent.run screen                                     # screen top movers
+    python -m trading_agent.run screen --with-sentiment                    # screen + social sentiment
+    python -m trading_agent.run analyze TSLA                               # full TA on one symbol
+    python -m trading_agent.run quote TSLA AAPL                            # quick quotes
     python -m trading_agent.run size TSLA 45.20 43.80 bull 8000 4000
-    python -m trading_agent.run backtest NVDA TSLA AMD SPY                        # backtest (default: smc)
-    python -m trading_agent.run backtest NVDA TSLA --strategy hmm_ob --plot       # strategies: smc | hmm_smc | hmm_ob | logistic
+    python -m trading_agent.run sentiment NVDA TSLA AMD                    # social sentiment report
+    python -m trading_agent.run backtest NVDA TSLA AMD SPY                 # backtest (default: smc)
+    python -m trading_agent.run backtest NVDA TSLA --strategy hmm_ob --plot  # smc | hmm_smc | hmm_ob | logistic
 
 Output is JSON to stdout so Claude can parse and act on it.
 """
@@ -21,11 +23,11 @@ from .analysis import full_analysis
 from .risk import position_size, profit_targets, validate
 
 
-def cmd_screen():
-    results = run_screen(max_candidates=25)
+def cmd_screen(with_sentiment: bool = False):
+    results = run_screen(max_candidates=25, with_sentiment=with_sentiment)
     out = []
     for r in results[:15]:
-        out.append({
+        entry = {
             "symbol":     r["symbol"],
             "price":      r["price"],
             "pct_change": r["pct_change"],
@@ -33,7 +35,10 @@ def cmd_screen():
             "score":      r["score"],
             "bias":       r["bias"],
             "signals":    r["signals"],
-        })
+        }
+        if r.get("sentiment"):
+            entry["sentiment"] = r["sentiment"]
+        out.append(entry)
     print(json.dumps(out, indent=2, default=str))
 
 
@@ -138,6 +143,21 @@ def cmd_diagnose(symbol: str):
             print(f"  OB {o['type']:8s}  {o['low']:.2f}–{o['high']:.2f}  dist from price: {dist:+.1f}%")
 
 
+def cmd_sentiment(*symbols):
+    """Print composite sentiment report for one or more symbols."""
+    from .sentiment import score_sentiment, get_trending_tickers
+    if not symbols:
+        print("Discovering trending tickers from StockTwits + Reddit...", flush=True)
+        trending = get_trending_tickers()
+        print(json.dumps({"trending": trending[:30]}, indent=2))
+        return
+    out = {}
+    for sym in symbols:
+        print(f"  fetching sentiment for {sym}...", file=sys.stderr, flush=True)
+        out[sym] = score_sentiment(sym, fetch_trends=False)
+    print(json.dumps(out, indent=2, default=str))
+
+
 def cmd_backtest(symbols: list[str], plot: bool = False,
                  account_value: float = 10_000, strategy: str = "smc"):
     from .backtest import run_backtest, plot_results
@@ -162,7 +182,9 @@ def main():
 
     cmd = args[0].lower()
     if cmd == "screen":
-        cmd_screen()
+        cmd_screen(with_sentiment="--with-sentiment" in args)
+    elif cmd == "sentiment":
+        cmd_sentiment(*[s.upper() for s in args[1:]])
     elif cmd == "analyze" and len(args) >= 2:
         cmd_analyze(args[1].upper())
     elif cmd == "quote" and len(args) >= 2:
