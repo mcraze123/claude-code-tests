@@ -55,10 +55,12 @@ _LONDON_HOURS_ET = {2, 3, 4, 5, 6}              # today 2am → 7am
 # ── Entry filter thresholds ───────────────────────────────────────────────────
 RSI_LONG_MAX    = 65
 RSI_SHORT_MIN   = 35
-OB_ZONE_PCT     = 0.012   # ±1.2% of OB edge
+OB_ZONE_PCT     = 0.012   # ±1.2% of OB edge for price proximity
+OB_LEVEL_PCT    = 0.010   # OB mid must be within 1.0% of a session level
 FVG_ZONE_PCT    = 0.004   # ±0.4% of FVG edge
-LEVEL_ZONE_PCT  = 0.006   # price within 0.6% of session level counts as "at level"
-MIN_RR          = 1.0     # minimum ATR/risk ratio
+LEVEL_ZONE_PCT  = 0.006   # price within 0.6% of session level
+MIN_RR          = 1.0     # minimum ATR/risk ratio at entry
+MIN_RISK_ATR    = 0.30    # minimum risk as fraction of ATR (prevents tiny-risk blowups)
 
 
 def _to_et(ts) -> datetime:
@@ -192,27 +194,37 @@ class NYOpenStrategy(BaseStrategy):
         obs    = order_blocks(df_slice, lookback=50)
         fvgs   = fair_value_gaps(df_slice, lookback=50)
 
-        # ── Bullish setup ────────────────────────────────────────────────────
-        # Condition: daily not bearish AND RSI not overbought
-        # Price at/near a session LOW (sweep + bounce) with bull OB or FVG
-        if daily_trend in ("bullish", "neutral") and rsi_v < RSI_LONG_MAX:
-            at_low = self._price_at_level(price, levels, side="low")
-            at_open_bull = (
-                levels.get("daily_open") is not None
-                and price <= levels["daily_open"] * (1 + LEVEL_ZONE_PCT)
-            )
+        # Bar momentum: current bar must close in the entry direction (reversal confirmation)
+        bar_close = float(df_slice["Close"].iloc[-1])
+        bar_open  = float(df_slice["Open"].iloc[-1])
+        bar_green = bar_close >= bar_open  # bullish candle
+        bar_red   = bar_close < bar_open   # bearish candle
 
-            if at_low or at_open_bull:
-                bull_obs  = self._bull_obs_near(price, obs)
+        # ── Bullish setup ────────────────────────────────────────────────────
+        # Price at a session LOW with bull OB (that is also at that level) or bull FVG.
+        # Signal bar must close green (bouncing, not still falling).
+        if daily_trend in ("bullish", "neutral") and rsi_v < RSI_LONG_MAX and bar_green:
+            at_low = self._price_at_level(price, levels, side="low")
+
+            if at_low:
+                low_levels = [v for k, v in levels.items() if v and "low" in k]
+                # OBs must also sit at a session level — prevents random mid-chart OBs
+                bull_obs  = self._bull_obs_at_levels(price, obs, low_levels)
                 bull_fvgs = self._bull_fvgs_near(price, fvgs)
 
                 if bull_obs or bull_fvgs:
-                    ref  = bull_obs[-1] if bull_obs else None
-                    stop = round(
-                        (ref["low"] if ref else price) - atr_v * 0.75, 4
-                    )
-                    if stop < price and (price - stop) >= price * 0.001:
-                        rr = atr_v / (price - stop)
+                    if bull_obs:
+                        ob   = bull_obs[-1]
+                        stop = ob["low"] - atr_v * 0.5
+                    else:
+                        fvg  = bull_fvgs[-1]
+                        stop = fvg["bottom"] - atr_v * 0.25
+                    # Enforce minimum risk floor so hard cap never exceeds ~6R loss
+                    stop  = min(stop, price - atr_v * MIN_RISK_ATR)
+                    stop  = round(stop, 4)
+                    risk_ = price - stop
+                    if stop < price and risk_ >= price * 0.001:
+                        rr = atr_v / risk_
                         if rr >= MIN_RR:
                             return {
                                 "direction":   "long",
@@ -225,26 +237,29 @@ class NYOpenStrategy(BaseStrategy):
                             }
 
         # ── Bearish setup ────────────────────────────────────────────────────
-        # Condition: daily not bullish AND RSI not oversold
-        # Price at/near a session HIGH (sweep + rejection) with bear OB or FVG
-        if daily_trend in ("bearish", "neutral") and rsi_v > RSI_SHORT_MIN:
+        # Price at a session HIGH with bear OB (at that level) or bear FVG.
+        # Signal bar must close red (rejecting, not still rising).
+        if daily_trend in ("bearish", "neutral") and rsi_v > RSI_SHORT_MIN and bar_red:
             at_high = self._price_at_level(price, levels, side="high")
-            at_open_bear = (
-                levels.get("daily_open") is not None
-                and price >= levels["daily_open"] * (1 - LEVEL_ZONE_PCT)
-            )
 
-            if at_high or at_open_bear:
-                bear_obs  = self._bear_obs_near(price, obs)
+            if at_high:
+                high_levels = [v for k, v in levels.items() if v and "high" in k]
+                bear_obs  = self._bear_obs_at_levels(price, obs, high_levels)
                 bear_fvgs = self._bear_fvgs_near(price, fvgs)
 
                 if bear_obs or bear_fvgs:
-                    ref  = bear_obs[-1] if bear_obs else None
-                    stop = round(
-                        (ref["high"] if ref else price) + atr_v * 0.75, 4
-                    )
-                    if stop > price and (stop - price) >= price * 0.001:
-                        rr = atr_v / (stop - price)
+                    if bear_obs:
+                        ob   = bear_obs[-1]
+                        stop = ob["high"] + atr_v * 0.5
+                    else:
+                        fvg  = bear_fvgs[-1]
+                        stop = fvg["top"] + atr_v * 0.25
+                    # Enforce minimum risk floor
+                    stop  = max(stop, price + atr_v * MIN_RISK_ATR)
+                    stop  = round(stop, 4)
+                    risk_ = stop - price
+                    if stop > price and risk_ >= price * 0.001:
+                        rr = atr_v / risk_
                         if rr >= MIN_RR:
                             return {
                                 "direction":   "short",
@@ -268,18 +283,32 @@ class NYOpenStrategy(BaseStrategy):
                     return True
         return False
 
-    def _bull_obs_near(self, price: float, obs: list) -> list:
+    def _bull_obs_at_levels(self, price: float, obs: list,
+                             session_lows: list) -> list:
+        """
+        Bullish OBs that are both near price AND anchored to a session low.
+        Prevents picking up random mid-chart OBs that have nothing to do with
+        the session structure.
+        """
         return [
             o for o in obs
             if o["type"] == "bullish"
             and o["low"]  * (1 - OB_ZONE_PCT) <= price <= o["high"] * (1 + OB_ZONE_PCT)
+            and any(abs(o["mid"] - lv) / lv <= OB_LEVEL_PCT
+                    for lv in session_lows if lv)
         ]
 
-    def _bear_obs_near(self, price: float, obs: list) -> list:
+    def _bear_obs_at_levels(self, price: float, obs: list,
+                             session_highs: list) -> list:
+        """
+        Bearish OBs near price AND anchored to a session high.
+        """
         return [
             o for o in obs
             if o["type"] == "bearish"
             and o["low"]  * (1 - OB_ZONE_PCT) <= price <= o["high"] * (1 + OB_ZONE_PCT)
+            and any(abs(o["mid"] - lv) / lv <= OB_LEVEL_PCT
+                    for lv in session_highs if lv)
         ]
 
     def _bull_fvgs_near(self, price: float, fvgs: list) -> list:

@@ -238,6 +238,10 @@ def simulate_symbol(symbol: str,
             continue
         if risk < entry * 0.001:
             continue
+        # Skip if actual fill risk is < 20% of ATR — gap-fill entries that would
+        # create extreme R losses from the hard ATR cap
+        if sig.get("atr") and risk < sig["atr"] * 0.20:
+            continue
 
         tgts = profit_targets(entry, stop, sig["direction"], sig["atr"])
         pos  = position_size(account_value, entry, stop)
