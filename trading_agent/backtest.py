@@ -52,12 +52,13 @@ class Trade:
     exit_bar:     Optional[int]   = None
     exit_time:    Optional[str]   = None
     exit_price:   Optional[float] = None
-    exit_reason:  Optional[str]   = None   # "tp2" / "be_stop" / "stop" / "max_loss" / "timeout"
+    exit_reason:  Optional[str]   = None
     pnl_r:        Optional[float] = None
     shares:       int             = 0
-    regime:       Optional[str]   = None   # populated by regime-aware strategies
-    atr:          float           = 0.0    # ATR at entry, used for hard cap
+    regime:       Optional[str]   = None
+    atr:          float           = 0.0    # ATR at entry, used for hard 2×ATR cap
     initial_risk: float           = 0.0    # |entry - original_stop|, constant
+    trail_to_tp2: bool            = False  # if True: BE trail at TP1 → aim for TP2
     be_trail:     bool            = False  # True once TP1 hit and stop moved to entry
 
 
@@ -66,16 +67,20 @@ class Trade:
 def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
                   bar_open: float) -> Optional[Trade]:
     """
-    Staged exit: hard cap → stop → TP2 → (TP1 mutates stop to entry, continues).
-    initial_risk is fixed at entry so pnl_r is always measured in original R units.
+    Hard cap at 2×ATR, then stop, then TP exit.
+
+    trail_to_tp2=False (default): exits the full position at TP1.
+    trail_to_tp2=True:            at TP1 moves stop to breakeven, exits at TP2.
+
+    initial_risk is fixed at entry so pnl_r is always in original R units.
     """
     entry = trade.entry_price
     risk  = trade.initial_risk or abs(entry - trade.stop)
 
     if trade.direction == "long":
-        hard_cap = entry - 2.0 * trade.atr
+        hard_cap = entry - 2.0 * trade.atr if trade.atr else None
 
-        if bar_low <= hard_cap:
+        if hard_cap and bar_low <= hard_cap:
             trade.exit_price  = hard_cap
             trade.exit_reason = "max_loss"
             trade.pnl_r = round((hard_cap - entry) / risk, 2)
@@ -87,20 +92,26 @@ def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
             trade.pnl_r = round((trade.exit_price - entry) / risk, 2)
             return trade
 
-        if bar_high >= trade.tp2:
-            trade.exit_price  = trade.tp2
-            trade.exit_reason = "tp2"
-            trade.pnl_r = round((trade.tp2 - entry) / risk, 2)
-            return trade
-
-        if not trade.be_trail and bar_high >= trade.tp1:
-            trade.be_trail = True
-            trade.stop     = entry  # trail stop to breakeven
+        if trade.trail_to_tp2:
+            if bar_high >= trade.tp2:
+                trade.exit_price  = trade.tp2
+                trade.exit_reason = "tp2"
+                trade.pnl_r = round((trade.tp2 - entry) / risk, 2)
+                return trade
+            if not trade.be_trail and bar_high >= trade.tp1:
+                trade.be_trail = True
+                trade.stop     = entry
+        else:
+            if bar_high >= trade.tp1:
+                trade.exit_price  = trade.tp1
+                trade.exit_reason = "tp1"
+                trade.pnl_r = round((trade.tp1 - entry) / risk, 2)
+                return trade
 
     else:  # short
-        hard_cap = entry + 2.0 * trade.atr
+        hard_cap = entry + 2.0 * trade.atr if trade.atr else None
 
-        if bar_high >= hard_cap:
+        if hard_cap and bar_high >= hard_cap:
             trade.exit_price  = hard_cap
             trade.exit_reason = "max_loss"
             trade.pnl_r = round((entry - hard_cap) / risk, 2)
@@ -112,15 +123,21 @@ def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
             trade.pnl_r = round((entry - trade.exit_price) / risk, 2)
             return trade
 
-        if bar_low <= trade.tp2:
-            trade.exit_price  = trade.tp2
-            trade.exit_reason = "tp2"
-            trade.pnl_r = round((entry - trade.tp2) / risk, 2)
-            return trade
-
-        if not trade.be_trail and bar_low <= trade.tp1:
-            trade.be_trail = True
-            trade.stop     = entry  # trail stop to breakeven
+        if trade.trail_to_tp2:
+            if bar_low <= trade.tp2:
+                trade.exit_price  = trade.tp2
+                trade.exit_reason = "tp2"
+                trade.pnl_r = round((entry - trade.tp2) / risk, 2)
+                return trade
+            if not trade.be_trail and bar_low <= trade.tp1:
+                trade.be_trail = True
+                trade.stop     = entry
+        else:
+            if bar_low <= trade.tp1:
+                trade.exit_price  = trade.tp1
+                trade.exit_reason = "tp1"
+                trade.pnl_r = round((entry - trade.tp1) / risk, 2)
+                return trade
 
     return None
 
@@ -135,6 +152,8 @@ def simulate_symbol(symbol: str,
                     warmup_bars: int = 20,
                     max_hold_bars: int = 16,
                     refit_every: int = 50) -> list[dict]:
+    # Strategy can override max_hold_bars (e.g. NY Open caps at 4 bars)
+    max_hold_bars = getattr(strategy, "max_hold_bars", None) or max_hold_bars
     """
     Walk-forward simulation for one symbol.
     strategy.fit(df[:i]) is called every refit_every bars so ML strategies
@@ -165,6 +184,21 @@ def simulate_symbol(symbol: str,
             if closed:
                 closed.exit_time   = _ts(i + 1)
                 trades.append(asdict(closed))
+                cooldown_until = i + 4
+                open_trade = None
+            elif strategy.should_force_close(open_trade, df_1h.index[i + 1],
+                                             float(df_1h["Close"].iloc[i + 1])):
+                xp   = float(df_1h["Close"].iloc[i + 1])
+                risk = open_trade.initial_risk or abs(open_trade.entry_price - open_trade.stop)
+                pnl  = (xp - open_trade.entry_price
+                        if open_trade.direction == "long"
+                        else open_trade.entry_price - xp)
+                open_trade.exit_price  = round(xp, 4)
+                open_trade.exit_reason = "forced_close"
+                open_trade.exit_bar    = i + 1
+                open_trade.exit_time   = _ts(i + 1)
+                open_trade.pnl_r       = round(pnl / risk, 2) if risk else 0
+                trades.append(asdict(open_trade))
                 cooldown_until = i + 4
                 open_trade = None
             elif (i + 1 - open_trade.entry_bar) >= max_hold_bars:
@@ -226,6 +260,7 @@ def simulate_symbol(symbol: str,
             regime       = sig.get("regime"),
             atr          = sig["atr"],
             initial_risk = risk,
+            trail_to_tp2 = getattr(strategy, "trail_to_tp2", False),
         )
 
     return trades

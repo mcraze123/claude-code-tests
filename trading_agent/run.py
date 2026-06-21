@@ -10,7 +10,8 @@ Usage:
     python -m trading_agent.run size TSLA 45.20 43.80 bull 8000 4000
     python -m trading_agent.run sentiment NVDA TSLA AMD                    # social sentiment report
     python -m trading_agent.run backtest NVDA TSLA AMD SPY                 # backtest (default: smc)
-    python -m trading_agent.run backtest NVDA TSLA --strategy hmm_ob --plot  # smc | hmm_smc | hmm_ob | logistic
+    python -m trading_agent.run backtest NVDA TSLA --strategy ny_open --plot  # smc | hmm_smc | hmm_ob | logistic | ny_open
+    python -m trading_agent.run news                                         # today's high-impact US news
 
 Output is JSON to stdout so Claude can parse and act on it.
 """
@@ -158,6 +159,22 @@ def cmd_sentiment(*symbols):
     print(json.dumps(out, indent=2, default=str))
 
 
+def cmd_news():
+    """Print today's high-impact US economic news events."""
+    from .strategies.news_filter import fetch_us_news
+    import pytz
+    from datetime import datetime
+    ET = pytz.timezone("America/New_York")
+    today = datetime.now(ET).date()
+    print(f"High-impact US news for {today}:", flush=True)
+    events = fetch_us_news(today)
+    if not events:
+        print("  None found (calendar unavailable or no events today).")
+        return
+    for ev in events:
+        print(f"  {ev['time'].strftime('%I:%M %p ET')}  [{ev['impact'].upper():6s}]  {ev['event']}")
+
+
 def cmd_backtest(symbols: list[str], plot: bool = False,
                  account_value: float = 10_000, strategy: str = "smc"):
     from .backtest import run_backtest, plot_results
@@ -193,6 +210,8 @@ def main():
         cmd_size(*args[1:])
     elif cmd == "diagnose" and len(args) >= 2:
         cmd_diagnose(args[1].upper())
+    elif cmd == "news":
+        cmd_news()
     elif cmd == "backtest" and len(args) >= 2:
         do_plot  = "--plot" in args
         strategy = "smc"

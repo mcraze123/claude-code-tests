@@ -19,17 +19,32 @@ class BaseStrategy:
     Strategies that need historical fitting (HMM, logistic) implement fit().
     The backtester calls fit(df[:i]) every refit_every bars so the model
     only ever sees data up to the current bar — no look-ahead in parameters.
+
+    Optional overrides:
+        trail_to_tp2    — if True: trail stop to BE after TP1, exit at TP2
+                          if False (default): exit the full position at TP1
+        max_hold_bars   — override the simulator's default max hold duration
+        should_force_close — return True to close the trade at a specific bar
     """
 
     name: str = "base"
+
+    # When True: at TP1 move stop to breakeven and aim for TP2.
+    # When False (default): exit the full position at TP1.
+    trail_to_tp2: bool = False
+
+    # Override the simulator default (16 bars). None = use simulator default.
+    max_hold_bars: Optional[int] = None
 
     def generate_signal(self, df_slice: pd.DataFrame, daily_trend: str) -> Optional[dict]:
         raise NotImplementedError
 
     def fit(self, df: pd.DataFrame) -> None:
-        """Train / update the model on data seen so far.  Default: no-op."""
         pass
 
     def on_trade_close(self, trade: dict) -> None:
-        """Called after each closed trade.  Default: no-op."""
         pass
+
+    def should_force_close(self, trade, bar_time, price: float) -> bool:
+        """Return True to force-close an open trade at bar_time's close price."""
+        return False
