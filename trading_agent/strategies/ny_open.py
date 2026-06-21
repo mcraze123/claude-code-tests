@@ -39,7 +39,7 @@ from typing import Optional
 
 from .base import BaseStrategy
 from .hmm_filter import HMMRegimeFilter
-from ..analysis import fair_value_gaps, rsi as calc_rsi, atr as calc_atr
+from ..analysis import order_blocks, fair_value_gaps, rsi as calc_rsi, atr as calc_atr
 
 ET = pytz.timezone("America/New_York")
 
@@ -247,6 +247,16 @@ class NYOpenStrategy(BaseStrategy):
                             "session_levels": {k: v for k, v in levels.items() if v},
                         }
 
+        # ── OB Sweep (stop-hunt recovery) ────────────────────────────────────
+        # Price wicks through an OB edge (sweeping retail stops) then closes
+        # back inside — enter on the recovery close.
+        obs = order_blocks(df_slice, lookback=40)
+        ob_sig = self._check_ob_sweep(
+            df_slice, price, obs, atr_v, rsi_v, daily_trend
+        )
+        if ob_sig:
+            return ob_sig
+
         return None
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -272,3 +282,67 @@ class NYOpenStrategy(BaseStrategy):
             if f["type"] == "bearish" and not f["filled"]
             and f["bottom"] * (1 - FVG_ZONE_PCT) <= price <= f["top"] * (1 + FVG_ZONE_PCT)
         ]
+
+    def _check_ob_sweep(self, df: pd.DataFrame, price: float,
+                        obs: list, atr_v: float, rsi_v: float,
+                        daily_trend: str) -> Optional[dict]:
+        """
+        Scan OBs for the sweep-and-recover pattern on the last closed bar.
+        Bullish: bar wicked below OB low then closed above it (stop hunt below).
+        Bearish: bar wicked above OB high then closed below it (stop hunt above).
+        """
+        if len(df) < 2:
+            return None
+
+        bar_low   = float(df["Low"].iloc[-1])
+        bar_high  = float(df["High"].iloc[-1])
+        bar_close = float(df["Close"].iloc[-1])
+        bar_open_ = float(df["Open"].iloc[-1])
+
+        # ── Bullish sweep: wick below OB low, close back above ───────────────
+        if daily_trend in ("bullish", "neutral") and rsi_v < RSI_LONG_MAX:
+            for ob in obs:
+                if ob["type"] != "bullish":
+                    continue
+                ob_low  = float(ob["low"])
+                ob_high = float(ob["high"])
+                # Wick below the OB, close recovered inside/above OB low
+                if bar_low < ob_low and bar_close >= ob_low and bar_close > bar_open_:
+                    stop = bar_low - atr_v * 0.25
+                    stop = min(stop, price - atr_v * MIN_RISK_ATR)
+                    stop = round(stop, 4)
+                    risk_ = price - stop
+                    if stop < price and risk_ >= price * 0.001 and atr_v / risk_ >= MIN_RR:
+                        return {
+                            "direction":   "long",
+                            "signal_type": "ob_sweep",
+                            "entry":       price,
+                            "stop":        stop,
+                            "atr":         atr_v,
+                            "ob_zone":     [ob_low, ob_high],
+                        }
+
+        # ── Bearish sweep: wick above OB high, close back below ──────────────
+        if daily_trend in ("bearish", "neutral") and rsi_v > RSI_SHORT_MIN:
+            for ob in obs:
+                if ob["type"] != "bearish":
+                    continue
+                ob_low  = float(ob["low"])
+                ob_high = float(ob["high"])
+                # Wick above the OB, close recovered inside/below OB high
+                if bar_high > ob_high and bar_close <= ob_high and bar_close < bar_open_:
+                    stop = bar_high + atr_v * 0.25
+                    stop = max(stop, price + atr_v * MIN_RISK_ATR)
+                    stop = round(stop, 4)
+                    risk_ = stop - price
+                    if stop > price and risk_ >= price * 0.001 and atr_v / risk_ >= MIN_RR:
+                        return {
+                            "direction":   "short",
+                            "signal_type": "ob_sweep",
+                            "entry":       price,
+                            "stop":        stop,
+                            "atr":         atr_v,
+                            "ob_zone":     [ob_low, ob_high],
+                        }
+
+        return None
