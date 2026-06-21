@@ -51,6 +51,15 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(period).mean()
 
 
+def cmf(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Chaikin Money Flow: volume-weighted close position within each bar's range."""
+    hl  = (df["High"] - df["Low"]).replace(0, np.nan)
+    clv = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / hl
+    mfv = clv * df["Volume"]
+    vol_sum = df["Volume"].rolling(period).sum().replace(0, np.nan)
+    return mfv.rolling(period).sum() / vol_sum
+
+
 def bollinger(df: pd.DataFrame, period: int = 20, std: float = 2.0) -> pd.DataFrame:
     mid = df["Close"].rolling(period).mean()
     s = df["Close"].rolling(period).std()

@@ -39,7 +39,7 @@ from typing import Optional
 
 from .base import BaseStrategy
 from .hmm_filter import HMMRegimeFilter
-from ..analysis import fair_value_gaps, rsi as calc_rsi, atr as calc_atr
+from ..analysis import order_blocks, fair_value_gaps, cmf as calc_cmf, rsi as calc_rsi, atr as calc_atr
 
 ET = pytz.timezone("America/New_York")
 
@@ -152,7 +152,8 @@ class NYOpenStrategy(BaseStrategy):
 
     # ── Signal generation ─────────────────────────────────────────────────────
     def generate_signal(self, df_slice: pd.DataFrame,
-                        daily_trend: str) -> Optional[dict]:
+                        daily_trend: str,
+                        df_15m: Optional[pd.DataFrame] = None) -> Optional[dict]:
         if len(df_slice) < 30:
             return None
 
@@ -247,6 +248,20 @@ class NYOpenStrategy(BaseStrategy):
                             "session_levels": {k: v for k, v in levels.items() if v},
                         }
 
+        # ── OB Sweep on 15M ──────────────────────────────────────────────────
+        # 1H bars are too coarse — by close, the reversal is over.
+        # On 15M we catch the wick-and-recover within minutes, confirm with
+        # a CMF sign change and a volume spike on the sweep bar.
+        if df_15m is not None and len(df_15m) >= 20:
+            df_15m_local = df_15m[df_15m.index <= df_slice.index[-1]].tail(20)
+            if len(df_15m_local) >= 12:
+                obs_15m = order_blocks(df_15m_local, lookback=20)
+                ob_sig  = self._check_ob_sweep_15m(
+                    df_15m_local, obs_15m, atr_v, rsi_v, daily_trend, levels
+                )
+                if ob_sig:
+                    return ob_sig
+
         return None
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -272,4 +287,93 @@ class NYOpenStrategy(BaseStrategy):
             if f["type"] == "bearish" and not f["filled"]
             and f["bottom"] * (1 - FVG_ZONE_PCT) <= price <= f["top"] * (1 + FVG_ZONE_PCT)
         ]
+
+    def _check_ob_sweep_15m(self, df: pd.DataFrame, obs: list,
+                             atr_1h: float, rsi_v: float,
+                             daily_trend: str, levels: dict) -> Optional[dict]:
+        """
+        Scan the last 8 15M bars for an OB sweep + volume spike + CMF confirmation.
+
+        Filters:
+          - Sweep bar volume >= 1.5× 20-bar average (genuine liquidity grab)
+          - CMF >= 0 on recovery bar for longs, <= 0 for shorts (money flow confirms)
+          - Sweep wick must reach a session level
+        """
+        atr_series = calc_atr(df)
+        cmf_series = calc_cmf(df, period=8)   # shorter period suits 15M granularity
+        vol_ma     = df["Volume"].rolling(20).mean()
+
+        # Scan last 8 bars in reverse — return the most recent qualifying sweep
+        scan_start = max(0, len(df) - 8)
+        for idx in range(len(df) - 1, scan_start - 1, -1):
+            bar       = df.iloc[idx]
+            bar_low   = float(bar["Low"])
+            bar_high  = float(bar["High"])
+            bar_close = float(bar["Close"])
+            bar_open_ = float(bar["Open"])
+            bar_vol   = float(bar.get("Volume", 0))
+
+            atr_15m = float(atr_series.iloc[idx])
+            if pd.isna(atr_15m) or atr_15m == 0:
+                atr_15m = atr_1h * 0.25
+
+            # Volume spike: sweep bar must have elevated volume
+            vol_avg = float(vol_ma.iloc[idx]) if not pd.isna(vol_ma.iloc[idx]) else 0
+            if vol_avg > 0 and bar_vol < vol_avg * 1.5:
+                continue
+
+            # CMF at this bar
+            cmf_val = float(cmf_series.iloc[idx]) if not pd.isna(cmf_series.iloc[idx]) else 0.0
+
+            # ── Bullish sweep ─────────────────────────────────────────────────
+            if daily_trend in ("bullish", "neutral") and rsi_v < RSI_LONG_MAX \
+                    and bar_close > bar_open_ and cmf_val >= 0:
+                for ob in obs:
+                    if ob["type"] != "bullish":
+                        continue
+                    ob_low = float(ob["low"])
+                    if bar_low < ob_low and bar_close >= ob_low:
+                        if not self._price_at_level(bar_low, levels, side="low"):
+                            continue
+                        price = bar_close
+                        stop  = bar_low - atr_15m * 0.5
+                        stop  = min(stop, price - atr_1h * MIN_RISK_ATR)
+                        stop  = round(stop, 4)
+                        risk_ = price - stop
+                        if stop < price and risk_ >= price * 0.001 and atr_1h / risk_ >= MIN_RR:
+                            return {
+                                "direction":   "long",
+                                "signal_type": "ob_sweep",
+                                "entry":       price,
+                                "stop":        stop,
+                                "atr":         atr_1h,
+                                "ob_zone":     [ob_low, float(ob["high"])],
+                            }
+
+            # ── Bearish sweep ─────────────────────────────────────────────────
+            if daily_trend in ("bearish", "neutral") and rsi_v > RSI_SHORT_MIN \
+                    and bar_close < bar_open_ and cmf_val <= 0:
+                for ob in obs:
+                    if ob["type"] != "bearish":
+                        continue
+                    ob_high = float(ob["high"])
+                    if bar_high > ob_high and bar_close <= ob_high:
+                        if not self._price_at_level(bar_high, levels, side="high"):
+                            continue
+                        price = bar_close
+                        stop  = bar_high + atr_15m * 0.5
+                        stop  = max(stop, price + atr_1h * MIN_RISK_ATR)
+                        stop  = round(stop, 4)
+                        risk_ = stop - price
+                        if stop > price and risk_ >= price * 0.001 and atr_1h / risk_ >= MIN_RR:
+                            return {
+                                "direction":   "short",
+                                "signal_type": "ob_sweep",
+                                "entry":       price,
+                                "stop":        stop,
+                                "atr":         atr_1h,
+                                "ob_zone":     [float(ob["low"]), ob_high],
+                            }
+
+        return None
 

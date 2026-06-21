@@ -148,6 +148,7 @@ def simulate_symbol(symbol: str,
                     df_1h: pd.DataFrame,
                     df_daily: pd.DataFrame,
                     strategy: BaseStrategy,
+                    df_15m: Optional[pd.DataFrame] = None,
                     account_value: float = 10_000,
                     warmup_bars: int = 20,
                     max_hold_bars: int = 16,
@@ -221,9 +222,10 @@ def simulate_symbol(symbol: str,
             continue
 
         # ── Look for new signal ──────────────────────────────────────────────
-        df_slice = df_1h.iloc[: i + 1]
-        d_trend  = _daily_trend(df_daily, bar_time)
-        sig      = strategy.generate_signal(df_slice, d_trend)
+        df_slice    = df_1h.iloc[: i + 1]
+        d_trend     = _daily_trend(df_daily, bar_time)
+        df_15m_slice = (df_15m[df_15m.index <= bar_time] if df_15m is not None else None)
+        sig          = strategy.generate_signal(df_slice, d_trend, df_15m=df_15m_slice)
 
         if sig is None:
             continue
@@ -451,6 +453,8 @@ def run_backtest(symbols: list[str],
     strategy = get_strategy(strategy_name)
     print(f"Strategy: {strategy.name}", flush=True)
 
+    uses_15m = strategy_name == "ny_open"
+
     all_trades: list[dict] = []
     for sym in symbols:
         print(f"  backtesting {sym}...", flush=True)
@@ -459,7 +463,8 @@ def run_backtest(symbols: list[str],
         if df_1h.empty or df_daily.empty:
             print(f"  {sym}: no data, skipping")
             continue
-        trades = simulate_symbol(sym, df_1h, df_daily, strategy, account_value)
+        df_15m = get_ohlcv(sym, "15m") if uses_15m else None
+        trades = simulate_symbol(sym, df_1h, df_daily, strategy, df_15m, account_value)
         print(f"  {sym}: {len(trades)} trades")
         all_trades.extend(trades)
 

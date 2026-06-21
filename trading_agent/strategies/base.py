@@ -36,7 +36,8 @@ class BaseStrategy:
     # Override the simulator default (16 bars). None = use simulator default.
     max_hold_bars: Optional[int] = None
 
-    def generate_signal(self, df_slice: pd.DataFrame, daily_trend: str) -> Optional[dict]:
+    def generate_signal(self, df_slice: pd.DataFrame, daily_trend: str,
+                        df_15m: "Optional[pd.DataFrame]" = None) -> Optional[dict]:
         raise NotImplementedError
 
     def fit(self, df: pd.DataFrame) -> None:
