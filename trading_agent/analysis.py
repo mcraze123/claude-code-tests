@@ -22,6 +22,16 @@ def vwap(df: pd.DataFrame) -> pd.Series:
     return (typical * df["Volume"]).cumsum() / df["Volume"].cumsum()
 
 
+def intraday_vwap(df: pd.DataFrame) -> float:
+    """Session VWAP anchored to the most recent trading day in df."""
+    last_date = df.index[-1].date()
+    today = df[df.index.date == last_date]
+    if today.empty or today["Volume"].sum() == 0:
+        today = df.tail(20)
+    typical = (today["High"] + today["Low"] + today["Close"]) / 3
+    return float((typical * today["Volume"]).sum() / today["Volume"].sum())
+
+
 def ema(df: pd.DataFrame, period: int) -> pd.Series:
     return df["Close"].ewm(span=period, adjust=False).mean()
 

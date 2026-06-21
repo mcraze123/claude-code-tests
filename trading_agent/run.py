@@ -62,8 +62,9 @@ def cmd_size(symbol, entry, stop, bias, account_value, buying_power, atr=None):
 def cmd_diagnose(symbol: str):
     """Print exactly what the signal detector sees on the last 60 bars of real data."""
     from .market_data import get_ohlcv
-    from .analysis import order_blocks, fair_value_gaps, rsi as calc_rsi, atr as calc_atr
-    from .backtest import _intraday_vwap, _generate_signal
+    from .analysis import order_blocks, fair_value_gaps, rsi as calc_rsi, atr as calc_atr, intraday_vwap
+    from .strategies.smc import SMCStrategy
+    _smc = SMCStrategy()
 
     df = get_ohlcv(symbol, "1h")
     if df.empty:
@@ -82,7 +83,7 @@ def cmd_diagnose(symbol: str):
         price = float(sl["Close"].iloc[-1])
         obs   = order_blocks(sl, lookback=30)
         fvgs  = fair_value_gaps(sl, lookback=40)
-        vwap_v = _intraday_vwap(sl)
+        vwap_v = intraday_vwap(sl)
         rsi_v  = float(calc_rsi(sl).iloc[-1])
         atr_v  = float(calc_atr(sl).iloc[-1])
         vwap_dev = (price - vwap_v) / vwap_v * 100
@@ -96,7 +97,7 @@ def cmd_diagnose(symbol: str):
         bear_fvg_near = [f for f in fvgs if f["type"] == "bearish" and not f["filled"]
                          and f["bottom"] * 0.997 <= price <= f["top"] * 1.003]
 
-        sig = _generate_signal(sl, "neutral")
+        sig = _smc.generate_signal(sl, "neutral")
         if sig or bull_ob_near or bear_ob_near or bull_fvg_near or bear_fvg_near or abs(vwap_dev) > 2.0:
             signals_found += 1
             bar_time = sl.index[-1].strftime("%m-%d %H:%M")
@@ -136,10 +137,11 @@ def cmd_diagnose(symbol: str):
             print(f"  OB {o['type']:8s}  {o['low']:.2f}–{o['high']:.2f}  dist from price: {dist:+.1f}%")
 
 
-def cmd_backtest(symbols: list[str], plot: bool = False, account_value: float = 10_000):
+def cmd_backtest(symbols: list[str], plot: bool = False,
+                 account_value: float = 10_000, strategy: str = "smc"):
     from .backtest import run_backtest, plot_results
-    print(f"Running backtest on: {', '.join(symbols)}", flush=True)
-    results = run_backtest(symbols, account_value)
+    print(f"Running backtest on: {', '.join(symbols)}  [{strategy}]", flush=True)
+    results = run_backtest(symbols, strategy_name=strategy, account_value=account_value)
     trade_log = results.pop("trade_log", [])
     print("\n=== BACKTEST RESULTS ===")
     print(json.dumps(results, indent=2, default=str))
@@ -169,10 +171,18 @@ def main():
     elif cmd == "diagnose" and len(args) >= 2:
         cmd_diagnose(args[1].upper())
     elif cmd == "backtest" and len(args) >= 2:
-        remaining = [s for s in args[1:] if s != "--plot"]
-        do_plot   = "--plot" in args
-        syms      = [s.upper() for s in remaining]
-        cmd_backtest(syms, plot=do_plot)
+        do_plot  = "--plot" in args
+        strategy = "smc"
+        syms     = []
+        toks     = iter(args[1:])
+        for tok in toks:
+            if tok == "--plot":
+                pass
+            elif tok == "--strategy":
+                strategy = next(toks, "smc")
+            else:
+                syms.append(tok.upper())
+        cmd_backtest(syms, plot=do_plot, strategy=strategy)
     else:
         print(f"Unknown command or missing args: {args}", file=sys.stderr)
         sys.exit(1)
