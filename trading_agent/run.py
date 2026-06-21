@@ -7,7 +7,8 @@ Usage:
     python -m trading_agent.run analyze TSLA                    # full TA on one symbol
     python -m trading_agent.run quote TSLA AAPL                 # quick quotes
     python -m trading_agent.run size TSLA 45.20 43.80 bull 8000 4000
-    python -m trading_agent.run backtest NVDA TSLA AMD SPY      # backtest strategy
+    python -m trading_agent.run backtest NVDA TSLA AMD SPY                        # backtest (default: smc)
+    python -m trading_agent.run backtest NVDA TSLA --strategy hmm_ob --plot       # strategies: smc | hmm_smc | hmm_ob | logistic
 
 Output is JSON to stdout so Claude can parse and act on it.
 """
