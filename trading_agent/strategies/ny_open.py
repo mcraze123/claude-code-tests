@@ -250,9 +250,10 @@ class NYOpenStrategy(BaseStrategy):
         # ── OB Sweep (stop-hunt recovery) ────────────────────────────────────
         # Price wicks through an OB edge (sweeping retail stops) then closes
         # back inside — enter on the recovery close.
+        # Sweep wick must reach a session level for meaningful confluence.
         obs = order_blocks(df_slice, lookback=40)
         ob_sig = self._check_ob_sweep(
-            df_slice, price, obs, atr_v, rsi_v, daily_trend
+            df_slice, price, obs, atr_v, rsi_v, daily_trend, levels
         )
         if ob_sig:
             return ob_sig
@@ -285,11 +286,12 @@ class NYOpenStrategy(BaseStrategy):
 
     def _check_ob_sweep(self, df: pd.DataFrame, price: float,
                         obs: list, atr_v: float, rsi_v: float,
-                        daily_trend: str) -> Optional[dict]:
+                        daily_trend: str, levels: dict) -> Optional[dict]:
         """
         Scan OBs for the sweep-and-recover pattern on the last closed bar.
         Bullish: bar wicked below OB low then closed above it (stop hunt below).
         Bearish: bar wicked above OB high then closed below it (stop hunt above).
+        The sweep wick must reach a session level — random OB sweeps have no edge.
         """
         if len(df) < 2:
             return None
@@ -308,6 +310,9 @@ class NYOpenStrategy(BaseStrategy):
                 ob_high = float(ob["high"])
                 # Wick below the OB, close recovered inside/above OB low
                 if bar_low < ob_low and bar_close >= ob_low and bar_close > bar_open_:
+                    # Sweep wick must be at a session LOW level (the liquidity pool)
+                    if not self._price_at_level(bar_low, levels, side="low"):
+                        continue
                     stop = bar_low - atr_v * 0.25
                     stop = min(stop, price - atr_v * MIN_RISK_ATR)
                     stop = round(stop, 4)
@@ -331,6 +336,9 @@ class NYOpenStrategy(BaseStrategy):
                 ob_high = float(ob["high"])
                 # Wick above the OB, close recovered inside/below OB high
                 if bar_high > ob_high and bar_close <= ob_high and bar_close < bar_open_:
+                    # Sweep wick must be at a session HIGH level (the liquidity pool)
+                    if not self._price_at_level(bar_high, levels, side="high"):
+                        continue
                     stop = bar_high + atr_v * 0.25
                     stop = max(stop, price + atr_v * MIN_RISK_ATR)
                     stop = round(stop, 4)
