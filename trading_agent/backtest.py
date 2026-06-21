@@ -40,58 +40,88 @@ def _daily_trend(df_daily: pd.DataFrame, as_of: pd.Timestamp) -> str:
 
 @dataclass
 class Trade:
-    symbol:      str
-    direction:   str            # "long" / "short"
-    signal_type: str
-    entry_bar:   int
-    entry_time:  str
-    entry_price: float
-    stop:        float
-    tp1:         float
-    tp2:         float
-    exit_bar:    Optional[int]    = None
-    exit_time:   Optional[str]    = None
-    exit_price:  Optional[float]  = None
-    exit_reason: Optional[str]    = None   # "tp1" / "tp2" / "stop" / "timeout"
-    pnl_r:       Optional[float]  = None
-    shares:      int              = 0
-    regime:      Optional[str]    = None   # populated by regime-aware strategies
+    symbol:       str
+    direction:    str            # "long" / "short"
+    signal_type:  str
+    entry_bar:    int
+    entry_time:   str
+    entry_price:  float
+    stop:         float
+    tp1:          float
+    tp2:          float
+    exit_bar:     Optional[int]   = None
+    exit_time:    Optional[str]   = None
+    exit_price:   Optional[float] = None
+    exit_reason:  Optional[str]   = None   # "tp2" / "be_stop" / "stop" / "max_loss" / "timeout"
+    pnl_r:        Optional[float] = None
+    shares:       int             = 0
+    regime:       Optional[str]   = None   # populated by regime-aware strategies
+    atr:          float           = 0.0    # ATR at entry, used for hard cap
+    initial_risk: float           = 0.0    # |entry - original_stop|, constant
+    be_trail:     bool            = False  # True once TP1 hit and stop moved to entry
 
 
 # ── Trade management ──────────────────────────────────────────────────────────
 
 def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
                   bar_open: float) -> Optional[Trade]:
+    """
+    Staged exit: hard cap → stop → TP2 → (TP1 mutates stop to entry, continues).
+    initial_risk is fixed at entry so pnl_r is always measured in original R units.
+    """
+    entry = trade.entry_price
+    risk  = trade.initial_risk or abs(entry - trade.stop)
+
     if trade.direction == "long":
+        hard_cap = entry - 2.0 * trade.atr
+
+        if bar_low <= hard_cap:
+            trade.exit_price  = hard_cap
+            trade.exit_reason = "max_loss"
+            trade.pnl_r = round((hard_cap - entry) / risk, 2)
+            return trade
+
         if bar_low <= trade.stop:
             trade.exit_price  = min(bar_open, trade.stop)
-            trade.exit_reason = "stop"
-            trade.pnl_r = round(
-                (trade.exit_price - trade.entry_price) /
-                (trade.entry_price - trade.stop), 2)
+            trade.exit_reason = "be_stop" if trade.be_trail else "stop"
+            trade.pnl_r = round((trade.exit_price - entry) / risk, 2)
             return trade
-        if bar_high >= trade.tp1:
-            trade.exit_price  = trade.tp1
-            trade.exit_reason = "tp1"
-            trade.pnl_r = round(
-                (trade.tp1 - trade.entry_price) /
-                (trade.entry_price - trade.stop), 2)
+
+        if bar_high >= trade.tp2:
+            trade.exit_price  = trade.tp2
+            trade.exit_reason = "tp2"
+            trade.pnl_r = round((trade.tp2 - entry) / risk, 2)
             return trade
+
+        if not trade.be_trail and bar_high >= trade.tp1:
+            trade.be_trail = True
+            trade.stop     = entry  # trail stop to breakeven
+
     else:  # short
+        hard_cap = entry + 2.0 * trade.atr
+
+        if bar_high >= hard_cap:
+            trade.exit_price  = hard_cap
+            trade.exit_reason = "max_loss"
+            trade.pnl_r = round((entry - hard_cap) / risk, 2)
+            return trade
+
         if bar_high >= trade.stop:
             trade.exit_price  = max(bar_open, trade.stop)
-            trade.exit_reason = "stop"
-            trade.pnl_r = round(
-                (trade.entry_price - trade.exit_price) /
-                (trade.stop - trade.entry_price), 2)
+            trade.exit_reason = "be_stop" if trade.be_trail else "stop"
+            trade.pnl_r = round((entry - trade.exit_price) / risk, 2)
             return trade
-        if bar_low <= trade.tp1:
-            trade.exit_price  = trade.tp1
-            trade.exit_reason = "tp1"
-            trade.pnl_r = round(
-                (trade.entry_price - trade.tp1) /
-                (trade.stop - trade.entry_price), 2)
+
+        if bar_low <= trade.tp2:
+            trade.exit_price  = trade.tp2
+            trade.exit_reason = "tp2"
+            trade.pnl_r = round((entry - trade.tp2) / risk, 2)
             return trade
+
+        if not trade.be_trail and bar_low <= trade.tp1:
+            trade.be_trail = True
+            trade.stop     = entry  # trail stop to breakeven
+
     return None
 
 
@@ -139,7 +169,7 @@ def simulate_symbol(symbol: str,
                 open_trade = None
             elif (i + 1 - open_trade.entry_bar) >= max_hold_bars:
                 xp   = float(df_1h["Close"].iloc[i + 1])
-                risk = abs(open_trade.entry_price - open_trade.stop)
+                risk = open_trade.initial_risk or abs(open_trade.entry_price - open_trade.stop)
                 pnl  = (xp - open_trade.entry_price
                         if open_trade.direction == "long"
                         else open_trade.entry_price - xp)
@@ -183,17 +213,19 @@ def simulate_symbol(symbol: str,
             continue
 
         open_trade = Trade(
-            symbol      = symbol,
-            direction   = sig["direction"],
-            signal_type = sig["signal_type"],
-            entry_bar   = i + 1,
-            entry_time  = _ts(i + 1),
-            entry_price = round(entry, 4),
-            stop        = round(stop, 4),
-            tp1         = tgts["tp1"],
-            tp2         = tgts["tp2"],
-            shares      = pos["shares"],
-            regime      = sig.get("regime"),
+            symbol       = symbol,
+            direction    = sig["direction"],
+            signal_type  = sig["signal_type"],
+            entry_bar    = i + 1,
+            entry_time   = _ts(i + 1),
+            entry_price  = round(entry, 4),
+            stop         = round(stop, 4),
+            tp1          = tgts["tp1"],
+            tp2          = tgts["tp2"],
+            shares       = pos["shares"],
+            regime       = sig.get("regime"),
+            atr          = sig["atr"],
+            initial_risk = risk,
         )
 
     return trades
