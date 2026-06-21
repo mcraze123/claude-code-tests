@@ -3,8 +3,8 @@ HMM-gated OB-only strategy with quality filters.
 
 Improvements over hmm_smc:
   1. Only OB retests — FVG fills and VWAP reversion disabled
-  2. HMM must show "trending" regime (not just non-volatile)
-  3. Daily trend must be confirmed — "neutral" is rejected
+  2. HMM volatile regime is blocked; trending and ranging are allowed
+  3. Neutral daily trend is allowed (OB type gives direction); counter-trend blocked
   4. OB recency: OB must be ≤ OB_RECENCY_BARS old
   5. Volume confirmation: impulse candle that created the OB must be ≥ IMPULSE_RVOL × avg vol
   6. Wider stop: OB_STOP_ATR × ATR below/above OB edge instead of fixed 0.3%
@@ -17,11 +17,11 @@ from .base import BaseStrategy
 from .hmm_filter import HMMRegimeFilter
 from ..analysis import order_blocks, rsi as calc_rsi, atr as calc_atr
 
-OB_RECENCY_BARS = 15    # reject OBs older than this many bars
-IMPULSE_RVOL    = 1.5   # impulse candle must exceed this × 20-bar avg volume
+OB_RECENCY_BARS = 30    # reject OBs older than this many bars
+IMPULSE_RVOL    = 1.2   # impulse candle must exceed this × 20-bar avg volume
 OB_STOP_ATR     = 0.5   # stop = OB edge ± (OB_STOP_ATR × ATR)
-RSI_LONG_MAX    = 60    # RSI ceiling for long entries
-RSI_SHORT_MIN   = 40    # RSI floor for short entries
+RSI_LONG_MAX    = 65    # RSI ceiling for long entries
+RSI_SHORT_MIN   = 35    # RSI floor for short entries
 
 
 class HMMOBStrategy(BaseStrategy):
@@ -34,14 +34,14 @@ class HMMOBStrategy(BaseStrategy):
         self._filter.fit(df)
 
     def generate_signal(self, df_slice: pd.DataFrame, daily_trend: str) -> Optional[dict]:
-        # Gate 1: regime must be trending
+        # Gate 1: regime must be trending or ranging (OBs work in both; volatile = skip)
         regime = self._filter.get_regime(df_slice)
-        if regime != "trending":
+        if regime == "volatile":
             return None
 
-        # Gate 2: need a committed daily trend — no neutral
-        if daily_trend not in ("bullish", "bearish"):
-            return None
+        # Gate 2: neutral daily trend is allowed — OB type determines direction
+        # but in a strong counter-trend we skip (e.g. bullish OB in bearish day)
+        # handled below by only entering with the daily trend or neutral
 
         if len(df_slice) < 22:
             return None
@@ -76,11 +76,11 @@ class HMMOBStrategy(BaseStrategy):
 
         def _viable(stop: float) -> bool:
             risk = abs(price - stop)
-            # TP1 = entry + 1×ATR  →  min R:R = ATR / risk ≥ 1.2
-            return risk >= price * 0.001 and atr_v / risk >= 1.2
+            # TP1 = entry + 1×ATR  →  min R:R = ATR / risk ≥ 1.0
+            return risk >= price * 0.001 and atr_v / risk >= 1.0
 
         # ── Bullish OB retest ─────────────────────────────────────────────────
-        if daily_trend == "bullish" and rsi_v < RSI_LONG_MAX:
+        if daily_trend in ("bullish", "neutral") and rsi_v < RSI_LONG_MAX:
             candidates = [
                 o for o in obs
                 if o["type"] == "bullish"
@@ -97,7 +97,7 @@ class HMMOBStrategy(BaseStrategy):
                             "regime": regime}
 
         # ── Bearish OB retest ─────────────────────────────────────────────────
-        if daily_trend == "bearish" and rsi_v > RSI_SHORT_MIN:
+        if daily_trend in ("bearish", "neutral") and rsi_v > RSI_SHORT_MIN:
             candidates = [
                 o for o in obs
                 if o["type"] == "bearish"
