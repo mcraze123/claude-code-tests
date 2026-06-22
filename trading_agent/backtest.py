@@ -382,7 +382,9 @@ def simulate_symbol(symbol: str,
             continue
 
         trail            = sig.get("trail", getattr(strategy, "trail_to_tp2", False))
-        scale_out_trail  = getattr(strategy, "scale_out_trail", False)
+        # Per-signal override takes priority; fall back to strategy-level flag
+        scale_out_trail  = sig.get("scale_out_trail",
+                                   getattr(strategy, "scale_out_trail", False))
 
         open_trade = Trade(
             symbol          = symbol,
@@ -596,6 +598,17 @@ def run_backtest(symbols: list[str],
         if df_1h.empty or df_daily.empty:
             print(f"  {sym}: no data, skipping")
             continue
+
+        # Symbol quality screen for NY Open: only trade stocks with real intraday
+        # momentum. Low-ATR% choppy names produce noise FVG signals that stop out
+        # immediately. Require avg daily range >= 1.0% of price over last 30 days.
+        if needs_multi_tf and len(df_daily) >= 10:
+            recent = df_daily.tail(30)
+            avg_range_pct = (recent["High"] - recent["Low"]).mean() / recent["Close"].mean()
+            if avg_range_pct < 0.010:
+                print(f"  {sym}: avg daily range {avg_range_pct:.1%} < 1.0%, skipping")
+                continue
+
         df_15m = get_ohlcv(sym, "15m") if needs_multi_tf else None
         df_4h  = get_ohlcv(sym, "4h")  if needs_multi_tf else None
         trades = simulate_symbol(sym, df_1h, df_daily, strategy,

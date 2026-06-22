@@ -60,7 +60,9 @@ RSI_SHORT_MIN   = 35
 FVG_ZONE_PCT    = 0.007   # ±0.7% of FVG edge (slightly wider to catch more fills)
 LEVEL_ZONE_PCT  = 0.010   # price within 1.0% of session level (was 0.6%)
 MIN_RR          = 1.0     # minimum ATR/risk ratio at entry
-MIN_RISK_ATR    = 0.30    # minimum risk as fraction of ATR (prevents tiny-risk blowups)
+MIN_RISK_ATR    = 0.35    # minimum risk as fraction of ATR (prevents tiny-risk blowups)
+FVG_STOP_CUSHION = 0.50   # ATR multiples below/above FVG edge for stop placement
+FVG_MIN_SIZE_ATR = 0.15   # FVG must span at least this fraction of ATR (filters noise)
 
 
 def _to_et(ts) -> datetime:
@@ -226,26 +228,30 @@ class NYOpenStrategy(BaseStrategy):
             at_low = self._price_at_level(price, levels, side="low")
 
             if at_low:
-                bull_fvgs = self._bull_fvgs_near(price, fvgs)
+                bull_fvgs = [
+                    f for f in self._bull_fvgs_near(price, fvgs)
+                    if f["top"] - f["bottom"] >= atr_v * FVG_MIN_SIZE_ATR
+                ]
                 if bull_fvgs:
                     fvg  = bull_fvgs[-1]
-                    stop = fvg["bottom"] - atr_v * 0.25
+                    stop = fvg["bottom"] - atr_v * FVG_STOP_CUSHION
                     stop = min(stop, price - atr_v * MIN_RISK_ATR)
                     stop = round(stop, 4)
                     risk_ = price - stop
                     if stop < price and risk_ >= price * 0.001 and atr_v / risk_ >= MIN_RR:
-                        tp_mult, trail = self._tp_from_confidence(
+                        tp_mult, trail, scale_out = self._tp_from_confidence(
                             "long", daily_trend, trend_4h, swing, price, regime
                         )
                         return {
-                            "direction":   "long",
-                            "signal_type": "fvg_fill",
-                            "entry":       price,
-                            "stop":        stop,
-                            "atr":         atr_v,
-                            "tp_mult":     tp_mult,
-                            "trail":       trail,
-                            "regime":      regime,
+                            "direction":    "long",
+                            "signal_type":  "fvg_fill",
+                            "entry":        price,
+                            "stop":         stop,
+                            "atr":          atr_v,
+                            "tp_mult":      tp_mult,
+                            "trail":        trail,
+                            "scale_out_trail": scale_out,
+                            "regime":       regime,
                         }
 
         # ── Bearish setup ────────────────────────────────────────────────────
@@ -255,26 +261,30 @@ class NYOpenStrategy(BaseStrategy):
             at_high = self._price_at_level(price, levels, side="high")
 
             if at_high:
-                bear_fvgs = self._bear_fvgs_near(price, fvgs)
+                bear_fvgs = [
+                    f for f in self._bear_fvgs_near(price, fvgs)
+                    if f["top"] - f["bottom"] >= atr_v * FVG_MIN_SIZE_ATR
+                ]
                 if bear_fvgs:
                     fvg  = bear_fvgs[-1]
-                    stop = fvg["top"] + atr_v * 0.25
+                    stop = fvg["top"] + atr_v * FVG_STOP_CUSHION
                     stop = max(stop, price + atr_v * MIN_RISK_ATR)
                     stop = round(stop, 4)
                     risk_ = stop - price
                     if stop > price and risk_ >= price * 0.001 and atr_v / risk_ >= MIN_RR:
-                        tp_mult, trail = self._tp_from_confidence(
+                        tp_mult, trail, scale_out = self._tp_from_confidence(
                             "short", daily_trend, trend_4h, swing, price, regime
                         )
                         return {
-                            "direction":   "short",
-                            "signal_type": "fvg_fill",
-                            "entry":       price,
-                            "stop":        stop,
-                            "atr":         atr_v,
-                            "tp_mult":     tp_mult,
-                            "trail":       trail,
-                            "regime":      regime,
+                            "direction":    "short",
+                            "signal_type":  "fvg_fill",
+                            "entry":        price,
+                            "stop":         stop,
+                            "atr":          atr_v,
+                            "tp_mult":      tp_mult,
+                            "trail":        trail,
+                            "scale_out_trail": scale_out,
+                            "regime":       regime,
                         }
 
         # ── OB Sweep on 15M ──────────────────────────────────────────────────
@@ -335,15 +345,18 @@ class NYOpenStrategy(BaseStrategy):
         return "equilibrium"
 
     def _tp_from_confidence(self, direction: str, daily_trend: str, trend_4h: str,
-                             swing: dict, price: float, regime: str) -> tuple[float, bool]:
+                             swing: dict, price: float,
+                             regime: str) -> tuple[float, bool, bool]:
         """
         Score setup confidence (0-1) from trend alignment, swing structure,
-        and premium/discount zone.  Returns (tp_mult, trail_to_tp2).
+        and premium/discount zone.
+
+        Returns (tp_mult, trail_to_tp2, scale_out_trail).
 
         Score thresholds:
-          >= 0.75 → high confidence: tp_mult=3.0, trail=True
-          >= 0.55 → medium: tp_mult=2.0, trail=True
-          < 0.55  → low: tp_mult=1.0, trail=False  (exit at TP1, cut early)
+          >= 0.75 → high: tp_mult=3.0, scale_out=True (50% at TP1, trail to 3×ATR)
+          >= 0.55 → medium: tp_mult=2.0, scale_out=True (50% at TP1, trail to 2×ATR)
+          < 0.55  → low: tp_mult=1.0, scale_out=False (exit 100% at TP1, no trail)
         """
         score = 0.40  # base
 
@@ -376,10 +389,10 @@ class NYOpenStrategy(BaseStrategy):
         score = min(1.0, score)
 
         if score >= 0.75:
-            return 3.0, True    # high confidence: run to 3×ATR
+            return 3.0, True, True    # high confidence: trail to 3×ATR
         if score >= 0.55:
-            return 2.0, True    # medium: standard trail to 2×ATR
-        return 1.0, False       # low: take profit at TP1, don't trail
+            return 2.0, True, True    # medium: trail to 2×ATR
+        return 1.0, False, False      # low: clean exit at TP1, no scale/trail
 
     def _check_ob_sweep_15m(self, df: pd.DataFrame, obs: list,
                              atr_1h: float, rsi_v: float,
@@ -435,18 +448,19 @@ class NYOpenStrategy(BaseStrategy):
                         stop  = round(stop, 4)
                         risk_ = price - stop
                         if stop < price and risk_ >= price * 0.001 and atr_1h / risk_ >= MIN_RR:
-                            tp_mult, trail = self._tp_from_confidence(
+                            tp_mult, trail, scale_out = self._tp_from_confidence(
                                 "long", daily_trend, trend_4h, swing, price, "unknown"
                             )
                             return {
-                                "direction":   "long",
-                                "signal_type": "ob_sweep",
-                                "entry":       price,
-                                "stop":        stop,
-                                "atr":         atr_1h,
-                                "tp_mult":     tp_mult,
-                                "trail":       trail,
-                                "ob_zone":     [ob_low, float(ob["high"])],
+                                "direction":    "long",
+                                "signal_type":  "ob_sweep",
+                                "entry":        price,
+                                "stop":         stop,
+                                "atr":          atr_1h,
+                                "tp_mult":      tp_mult,
+                                "trail":        trail,
+                                "scale_out_trail": scale_out,
+                                "ob_zone":      [ob_low, float(ob["high"])],
                             }
 
             # ── Bearish sweep ─────────────────────────────────────────────────
@@ -465,18 +479,19 @@ class NYOpenStrategy(BaseStrategy):
                         stop  = round(stop, 4)
                         risk_ = stop - price
                         if stop > price and risk_ >= price * 0.001 and atr_1h / risk_ >= MIN_RR:
-                            tp_mult, trail = self._tp_from_confidence(
+                            tp_mult, trail, scale_out = self._tp_from_confidence(
                                 "short", daily_trend, trend_4h, swing, price, "unknown"
                             )
                             return {
-                                "direction":   "short",
-                                "signal_type": "ob_sweep",
-                                "entry":       price,
-                                "stop":        stop,
-                                "atr":         atr_1h,
-                                "tp_mult":     tp_mult,
-                                "trail":       trail,
-                                "ob_zone":     [float(ob["low"]), ob_high],
+                                "direction":    "short",
+                                "signal_type":  "ob_sweep",
+                                "entry":        price,
+                                "stop":         stop,
+                                "atr":          atr_1h,
+                                "tp_mult":      tp_mult,
+                                "trail":        trail,
+                                "scale_out_trail": scale_out,
+                                "ob_zone":      [float(ob["low"]), ob_high],
                             }
 
         return None
