@@ -446,18 +446,25 @@ class NYOpenStrategy(BaseStrategy):
         cmf_series = calc_cmf(df_15m, period=8)
         vol_ma     = df_15m["Volume"].rolling(20).mean()
 
-        current_price = float(df_15m["Close"].iloc[-1])
-        prox = atr_1h * 2.0  # only consider OBs within 2×1H-ATR of current price
+        # Proximity: anchor on the SCAN WINDOW's price range, not just the last bar.
+        # A bar from 12 bars ago might have swept an OB even if current price has
+        # moved away — so the correct filter is "could any bar in the scan window
+        # have reached this OB zone?".
+        n_scan    = min(16, len(df_15m))
+        scan_low  = float(df_15m["Low"].iloc[-n_scan:].min())
+        scan_high = float(df_15m["High"].iloc[-n_scan:].max())
 
-        # Pre-filter by proximity so the inner loop is cheap
-        # Bullish OB: demand zone below price — body top (ob_open) within reach above
+        # Pre-filter by proximity so the inner loop is cheap.
+        # Bullish OB reachable: body top (ob_open, the higher price) must be at
+        # or above the scan window's minimum low (with 2% tolerance).
         bull_obs = [ob for ob in obs_1h
                     if ob["type"] == "bullish"
-                    and float(ob["close"]) <= current_price <= float(ob["open"]) + prox]
-        # Bearish OB: supply zone above price — body bottom (ob_open) within reach below
+                    and float(ob["open"]) >= scan_low * 0.98]
+        # Bearish OB reachable: body bottom (ob_open, the lower price) must be at
+        # or below the scan window's maximum high (with 2% tolerance).
         bear_obs = [ob for ob in obs_1h
                     if ob["type"] == "bearish"
-                    and float(ob["open"]) - prox <= current_price <= float(ob["close"])]
+                    and float(ob["open"]) <= scan_high * 1.02]
 
         if not bull_obs and not bear_obs:
             return None
