@@ -421,19 +421,22 @@ class NYOpenStrategy(BaseStrategy):
         provides precision entry timing: we catch the sweep wick and recovery
         before the 1H bar has even closed, entering ahead of most participants.
 
-        Entry conditions (all must hold):
-          - Confirmed daily trend (bullish for longs / bearish for shorts).
-            Neutral days are skipped — OBs need directional conviction.
-          - 15M sweep bar wicks through the 1H OB boundary and closes back
-            inside (wick = liquidity grab; close = smart money reversal).
-          - 15M sweep bar volume >= 1.5× its 20-bar rolling average.
-          - CMF >= 0 (longs) / <= 0 (shorts) on the sweep bar.
-          - 1H OB body >= 0.25×ATR — filters micro/noise OBs.
+        OB taxonomy (from analysis.order_blocks):
+          Bullish OB = last BEARISH candle (c < o) before bullish impulse.
+                       Body: ob["close"] (bottom) to ob["open"] (top).
+          Bearish OB = last BULLISH candle (c > o) before bearish impulse.
+                       Body: ob["open"] (bottom) to ob["close"] (top).
+
+        Sweep condition (bullish): 15M bar wicks INTO the OB body zone
+          (bar_low <= ob_body_top) and closes above the body bottom
+          (bar_close >= ob_body_bot).  This is the inducement-and-reversal
+          pattern — price hunts stops inside the body then recovers.
+
+        Proximity gate: only OBs within 2×ATR of current price are tested.
+          OBs from trending moves 10+ 1H bars ago are far below/above current
+          price and will never be touched during a single 15M kill-zone bar.
         """
-        # Only use recent 1H OBs — older ones are far from current price.
-        # lookback=15 covers roughly 2 trading days of 1H bars.
-        obs_1h = order_blocks(df_1h, lookback=15)
-        # Filter micro OBs: OB body (open-to-close) must span >= 20% of ATR
+        obs_1h = order_blocks(df_1h, lookback=20)
         obs_1h = [ob for ob in obs_1h
                   if abs(float(ob["open"]) - float(ob["close"])) >= atr_1h * 0.20]
         if not obs_1h:
@@ -442,6 +445,28 @@ class NYOpenStrategy(BaseStrategy):
         atr_series = calc_atr(df_15m)
         cmf_series = calc_cmf(df_15m, period=8)
         vol_ma     = df_15m["Volume"].rolling(20).mean()
+
+        current_price = float(df_15m["Close"].iloc[-1])
+        prox = atr_1h * 2.0  # only consider OBs within 2×1H-ATR of current price
+
+        # Pre-filter by proximity so the inner loop is cheap
+        # Bullish OB: demand zone below price — body top (ob_open) within reach above
+        bull_obs = [ob for ob in obs_1h
+                    if ob["type"] == "bullish"
+                    and float(ob["close"]) <= current_price <= float(ob["open"]) + prox]
+        # Bearish OB: supply zone above price — body bottom (ob_open) within reach below
+        bear_obs = [ob for ob in obs_1h
+                    if ob["type"] == "bearish"
+                    and float(ob["open"]) - prox <= current_price <= float(ob["close"])]
+
+        if not bull_obs and not bear_obs:
+            return None
+
+        # Directional bias: confirmed daily OR neutral daily with 4H backing
+        bull_bias = (daily_trend == "bullish") or \
+                    (daily_trend == "neutral" and trend_4h == "bullish")
+        bear_bias = (daily_trend == "bearish") or \
+                    (daily_trend == "neutral" and trend_4h == "bearish")
 
         # Scan last 16 15M bars in reverse — most recent qualifying sweep wins
         scan_start = max(0, len(df_15m) - 16)
@@ -457,33 +482,24 @@ class NYOpenStrategy(BaseStrategy):
             if pd.isna(atr_15m) or atr_15m == 0:
                 atr_15m = atr_1h * 0.25
 
-            # Volume spike: 1.3× average (slightly relaxed from 1.5×)
+            # Volume confirmation: 1.1× average (elevated but not extreme)
             vol_avg = float(vol_ma.iloc[idx]) if not pd.isna(vol_ma.iloc[idx]) else 0
-            if vol_avg > 0 and bar_vol < vol_avg * 1.3:
+            if vol_avg > 0 and bar_vol < vol_avg * 1.1:
                 continue
 
             cmf_val = float(cmf_series.iloc[idx]) if not pd.isna(cmf_series.iloc[idx]) else 0.0
 
-            # Directional bias: confirmed daily OR neutral daily with 4H backing
-            bull_bias = (daily_trend == "bullish") or \
-                        (daily_trend == "neutral" and trend_4h == "bullish")
-            bear_bias = (daily_trend == "bearish") or \
-                        (daily_trend == "neutral" and trend_4h == "bearish")
-
             # ── Bullish sweep ─────────────────────────────────────────────────
-            if bull_bias and rsi_v < RSI_LONG_MAX \
-                    and bar_close > bar_open_ and cmf_val >= 0:
-                for ob in obs_1h:
-                    if ob["type"] != "bullish":
-                        continue
-                    ob_body_bot = float(ob["close"])   # body bottom of bearish OB candle
-                    ob_low      = float(ob["low"])     # absolute low (stop reference)
-                    ob_high     = float(ob["high"])
-                    # Sweep: 15M bar wicks into or below the OB body bottom,
-                    # then closes back above the OB absolute low.
-                    # Using body bottom (not candle low) makes this realistic —
-                    # a wick through the body level is the actual liquidity grab.
-                    if bar_low <= ob_body_bot and bar_close >= ob_low \
+            # Bullish OB = bearish candle: open > close, body top=open, bottom=close
+            if bull_bias and bull_obs and rsi_v < RSI_LONG_MAX \
+                    and bar_close > bar_open_ and cmf_val >= -0.05:
+                for ob in bull_obs:
+                    ob_body_top = float(ob["open"])   # higher price = body top
+                    ob_body_bot = float(ob["close"])  # lower price = body bottom
+                    ob_low      = float(ob["low"])    # wick below body (stop ref)
+                    # Bar entered OB zone (wicked to body top or below)
+                    # and closed above body bottom — demand absorbed the sweep
+                    if bar_low <= ob_body_top and bar_close >= ob_body_bot \
                             and bar_low >= ob_low * 0.97:
                         price = bar_close
                         stop  = ob_low - atr_15m * 0.3
@@ -504,20 +520,20 @@ class NYOpenStrategy(BaseStrategy):
                                 "tp_mult":      tp_mult,
                                 "trail":        trail,
                                 "scale_out_trail": scale_out,
-                                "ob_zone":      [ob_low, ob_high],
+                                "ob_zone":      [ob_low, float(ob["high"])],
                             }
 
             # ── Bearish sweep ─────────────────────────────────────────────────
-            if bear_bias and rsi_v > RSI_SHORT_MIN \
-                    and bar_close < bar_open_ and cmf_val <= 0:
-                for ob in obs_1h:
-                    if ob["type"] != "bearish":
-                        continue
-                    ob_body_top = float(ob["close"])   # body top of bullish OB candle
-                    ob_high     = float(ob["high"])    # absolute high (stop reference)
-                    ob_low      = float(ob["low"])
-                    # Sweep: wick into or above OB body top, close back below OB high.
-                    if bar_high >= ob_body_top and bar_close <= ob_high \
+            # Bearish OB = bullish candle: close > open, body top=close, bottom=open
+            if bear_bias and bear_obs and rsi_v > RSI_SHORT_MIN \
+                    and bar_close < bar_open_ and cmf_val <= 0.05:
+                for ob in bear_obs:
+                    ob_body_bot = float(ob["open"])   # lower price = body bottom
+                    ob_body_top = float(ob["close"])  # higher price = body top
+                    ob_high     = float(ob["high"])   # wick above body (stop ref)
+                    # Bar entered OB zone (wicked to body bottom or above)
+                    # and closed below body top — supply absorbed the sweep
+                    if bar_high >= ob_body_bot and bar_close <= ob_body_top \
                             and bar_high <= ob_high * 1.03:
                         price = bar_close
                         stop  = ob_high + atr_15m * 0.3
@@ -538,7 +554,7 @@ class NYOpenStrategy(BaseStrategy):
                                 "tp_mult":      tp_mult,
                                 "trail":        trail,
                                 "scale_out_trail": scale_out,
-                                "ob_zone":      [ob_low, ob_high],
+                                "ob_zone":      [float(ob["low"]), ob_high],
                             }
 
         return None
