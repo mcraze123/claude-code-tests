@@ -430,11 +430,12 @@ class NYOpenStrategy(BaseStrategy):
           - CMF >= 0 (longs) / <= 0 (shorts) on the sweep bar.
           - 1H OB body >= 0.25×ATR — filters micro/noise OBs.
         """
-        # 1H OBs are the significant target levels
-        obs_1h = order_blocks(df_1h, lookback=30)
-        # Filter out micro OBs — body must be at least 25% of 1H ATR
+        # Only use recent 1H OBs — older ones are far from current price.
+        # lookback=15 covers roughly 2 trading days of 1H bars.
+        obs_1h = order_blocks(df_1h, lookback=15)
+        # Filter micro OBs: OB body (open-to-close) must span >= 20% of ATR
         obs_1h = [ob for ob in obs_1h
-                  if (float(ob["high"]) - float(ob["low"])) >= atr_1h * 0.25]
+                  if abs(float(ob["open"]) - float(ob["close"])) >= atr_1h * 0.20]
         if not obs_1h:
             return None
 
@@ -475,11 +476,17 @@ class NYOpenStrategy(BaseStrategy):
                 for ob in obs_1h:
                     if ob["type"] != "bullish":
                         continue
-                    ob_low = float(ob["low"])
-                    # Wick swept below OB bottom; close recovered back inside
-                    if bar_low < ob_low and bar_close >= ob_low:
+                    ob_body_bot = float(ob["close"])   # body bottom of bearish OB candle
+                    ob_low      = float(ob["low"])     # absolute low (stop reference)
+                    ob_high     = float(ob["high"])
+                    # Sweep: 15M bar wicks into or below the OB body bottom,
+                    # then closes back above the OB absolute low.
+                    # Using body bottom (not candle low) makes this realistic —
+                    # a wick through the body level is the actual liquidity grab.
+                    if bar_low <= ob_body_bot and bar_close >= ob_low \
+                            and bar_low >= ob_low * 0.97:
                         price = bar_close
-                        stop  = bar_low - atr_15m * 0.5
+                        stop  = ob_low - atr_15m * 0.3
                         stop  = min(stop, price - atr_1h * MIN_RISK_ATR)
                         stop  = round(stop, 4)
                         risk_ = price - stop
@@ -497,7 +504,7 @@ class NYOpenStrategy(BaseStrategy):
                                 "tp_mult":      tp_mult,
                                 "trail":        trail,
                                 "scale_out_trail": scale_out,
-                                "ob_zone":      [ob_low, float(ob["high"])],
+                                "ob_zone":      [ob_low, ob_high],
                             }
 
             # ── Bearish sweep ─────────────────────────────────────────────────
@@ -506,11 +513,14 @@ class NYOpenStrategy(BaseStrategy):
                 for ob in obs_1h:
                     if ob["type"] != "bearish":
                         continue
-                    ob_high = float(ob["high"])
-                    # Wick swept above OB top; close recovered back inside
-                    if bar_high > ob_high and bar_close <= ob_high:
+                    ob_body_top = float(ob["close"])   # body top of bullish OB candle
+                    ob_high     = float(ob["high"])    # absolute high (stop reference)
+                    ob_low      = float(ob["low"])
+                    # Sweep: wick into or above OB body top, close back below OB high.
+                    if bar_high >= ob_body_top and bar_close <= ob_high \
+                            and bar_high <= ob_high * 1.03:
                         price = bar_close
-                        stop  = bar_high + atr_15m * 0.5
+                        stop  = ob_high + atr_15m * 0.3
                         stop  = max(stop, price + atr_1h * MIN_RISK_ATR)
                         stop  = round(stop, 4)
                         risk_ = stop - price
@@ -528,7 +538,7 @@ class NYOpenStrategy(BaseStrategy):
                                 "tp_mult":      tp_mult,
                                 "trail":        trail,
                                 "scale_out_trail": scale_out,
-                                "ob_zone":      [float(ob["low"]), ob_high],
+                                "ob_zone":      [ob_low, ob_high],
                             }
 
         return None

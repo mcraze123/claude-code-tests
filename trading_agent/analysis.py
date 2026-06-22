@@ -119,12 +119,12 @@ def order_blocks(df: pd.DataFrame, lookback: int = 30) -> list[dict]:
 
         # Bullish OB
         if c < o and next_body > this_body * 1.2 and df["Close"].iloc[i + 1] > df["Open"].iloc[i + 1]:
-            obs.append({"type": "bullish", "high": h, "low": l,
+            obs.append({"type": "bullish", "high": h, "low": l, "open": o, "close": c,
                         "mid": (h + l) / 2, "date": df.index[i]})
 
         # Bearish OB
         if c > o and next_body > this_body * 1.2 and df["Close"].iloc[i + 1] < df["Open"].iloc[i + 1]:
-            obs.append({"type": "bearish", "high": h, "low": l,
+            obs.append({"type": "bearish", "high": h, "low": l, "open": o, "close": c,
                         "mid": (h + l) / 2, "date": df.index[i]})
 
     return obs
