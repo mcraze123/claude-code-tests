@@ -61,7 +61,7 @@ FVG_ZONE_PCT    = 0.007   # ±0.7% of FVG edge (slightly wider to catch more fil
 LEVEL_ZONE_PCT  = 0.010   # price within 1.0% of session level (was 0.6%)
 MIN_RR          = 1.0     # minimum ATR/risk ratio at entry
 MIN_RISK_ATR    = 0.35    # minimum risk as fraction of ATR (prevents tiny-risk blowups)
-FVG_STOP_CUSHION = 0.50   # ATR multiples below/above FVG edge for stop placement
+FVG_STOP_CUSHION = 0.30   # ATR multiples below/above FVG edge for stop placement
 FVG_MIN_SIZE_ATR = 0.15   # FVG must span at least this fraction of ATR (filters noise)
 
 
@@ -218,6 +218,8 @@ class NYOpenStrategy(BaseStrategy):
         # Bar reversal confirmation: signal bar must close in the entry direction
         bar_close = float(df_slice["Close"].iloc[-1])
         bar_open_ = float(df_slice["Open"].iloc[-1])
+        bar_low   = float(df_slice["Low"].iloc[-1])
+        bar_high  = float(df_slice["High"].iloc[-1])
         bar_green = bar_close >= bar_open_
         bar_red   = bar_close < bar_open_
 
@@ -225,7 +227,7 @@ class NYOpenStrategy(BaseStrategy):
         # Price at/near a session LOW with a bullish FVG at that level.
         # Signal bar must close green — the bounce is already forming.
         if daily_trend in ("bullish", "neutral") and rsi_v < RSI_LONG_MAX and bar_green:
-            at_low = self._price_at_level(price, levels, side="low")
+            at_low = self._price_at_level(price, levels, side="low", bar_extreme=bar_low)
 
             if at_low:
                 bull_fvgs = [
@@ -258,7 +260,7 @@ class NYOpenStrategy(BaseStrategy):
         # Price at/near a session HIGH with a bearish FVG at that level.
         # Signal bar must close red — the rejection is already forming.
         if daily_trend in ("bearish", "neutral") and rsi_v > RSI_SHORT_MIN and bar_red:
-            at_high = self._price_at_level(price, levels, side="high")
+            at_high = self._price_at_level(price, levels, side="high", bar_extreme=bar_high)
 
             if at_high:
                 bear_fvgs = [
@@ -306,12 +308,28 @@ class NYOpenStrategy(BaseStrategy):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _price_at_level(self, price: float, levels: dict, side: str) -> bool:
-        """True if price is within LEVEL_ZONE_PCT of any session level on 'side'."""
+    def _price_at_level(self, price: float, levels: dict, side: str,
+                        bar_extreme: float = None) -> bool:
+        """
+        True if price is within LEVEL_ZONE_PCT of a session level on 'side'.
+
+        When bar_extreme is supplied (bar_low for longs, bar_high for shorts),
+        requires a confirmed liquidity sweep: the bar must have WICKED THROUGH
+        the level and closed back inside.  This filters plain proximity touches
+        and only catches the inducement-and-reversal pattern.
+        """
         for k, v in levels.items():
             if v and side in k:
-                if abs(price - v) / v <= LEVEL_ZONE_PCT:
-                    return True
+                if bar_extreme is not None:
+                    if side == "low" and bar_extreme < v \
+                            and price >= v * (1 - LEVEL_ZONE_PCT):
+                        return True
+                    if side == "high" and bar_extreme > v \
+                            and price <= v * (1 + LEVEL_ZONE_PCT):
+                        return True
+                else:
+                    if abs(price - v) / v <= LEVEL_ZONE_PCT:
+                        return True
         return False
 
     def _bull_fvgs_near(self, price: float, fvgs: list) -> list:

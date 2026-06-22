@@ -112,10 +112,11 @@ def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
         return None
 
     if trade.direction == "long":
-        hard_cap = (entry - 2.0 * trade.atr) if trade.atr else None
+        # Cap loss at 2R (not 2×ATR — that creates -4R losses when stops are tight)
+        hard_cap = entry - 2.0 * risk
 
         # ── Hard cap (always checked first) ─────────────────────────────────
-        if hard_cap and bar_low <= hard_cap:
+        if bar_low <= hard_cap:
             exit_p = min(bar_open, hard_cap)
             trade.exit_price  = round(exit_p, 4)
             trade.exit_reason = "max_loss"
@@ -174,9 +175,9 @@ def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
                     return trade
 
     else:  # short
-        hard_cap = (entry + 2.0 * trade.atr) if trade.atr else None
+        hard_cap = entry + 2.0 * risk
 
-        if hard_cap and bar_high >= hard_cap:
+        if bar_high >= hard_cap:
             exit_p = max(bar_open, hard_cap)
             trade.exit_price  = round(exit_p, 4)
             trade.exit_reason = "max_loss"
