@@ -78,84 +78,160 @@ class Trade:
     initial_risk: float           = 0.0    # |entry - original_stop|, constant
     trail_to_tp2: bool            = False  # if True: BE trail at TP1 → aim for TP2
     be_trail:     bool            = False  # True once TP1 hit and stop moved to entry
+    scale_out_trail:   bool  = False  # 50% at TP1 then ATR trailing stop on remainder
+    partial_exit_done: bool  = False  # True after 50% scaled out at TP1
+    trail_stop:        float = 0.0    # live trailing stop level for the remaining half
+    partial_pnl_r:     float = 0.0    # R captured on the 50% exited at TP1
 
 
 # ── Trade management ──────────────────────────────────────────────────────────
 
+_TRAIL_ATR_MULT = 1.0   # trailing stop sits this many ATRs behind the extreme reached
+
+
+def _blend(r1: float, r2: float) -> float:
+    """Blend two R values as a 50/50 split (scale-out trade)."""
+    return round((r1 + r2) / 2, 2)
+
+
 def _manage_trade(trade: Trade, bar_high: float, bar_low: float,
                   bar_open: float) -> Optional[Trade]:
     """
-    Hard cap at 2×ATR, then stop, then TP exit.
+    Three exit modes (checked in order):
 
-    trail_to_tp2=False (default): exits the full position at TP1.
-    trail_to_tp2=True:            at TP1 moves stop to breakeven, exits at TP2.
+    scale_out_trail=True  — exit 50% at TP1, then trail remaining with ATR stop.
+    trail_to_tp2=True     — at TP1 move stop to BE, exit remaining at TP2.
+    (default)             — exit full position at TP1.
 
+    Hard 2×ATR cap applies to all modes.
     initial_risk is fixed at entry so pnl_r is always in original R units.
     """
     entry = trade.entry_price
     risk  = trade.initial_risk or abs(entry - trade.stop)
+    if not risk:
+        return None
 
     if trade.direction == "long":
-        hard_cap = entry - 2.0 * trade.atr if trade.atr else None
+        hard_cap = (entry - 2.0 * trade.atr) if trade.atr else None
 
+        # ── Hard cap (always checked first) ─────────────────────────────────
         if hard_cap and bar_low <= hard_cap:
-            trade.exit_price  = hard_cap
+            exit_p = min(bar_open, hard_cap)
+            trade.exit_price  = round(exit_p, 4)
             trade.exit_reason = "max_loss"
-            trade.pnl_r = round((hard_cap - entry) / risk, 2)
+            r = round((exit_p - entry) / risk, 2)
+            trade.pnl_r = _blend(trade.partial_pnl_r, r) if trade.partial_exit_done else r
             return trade
 
-        if bar_low <= trade.stop:
-            trade.exit_price  = min(bar_open, trade.stop)
-            trade.exit_reason = "be_stop" if trade.be_trail else "stop"
-            trade.pnl_r = round((trade.exit_price - entry) / risk, 2)
-            return trade
+        # ── Scale-out + ATR trail ────────────────────────────────────────────
+        if trade.scale_out_trail:
+            if not trade.partial_exit_done:
+                if bar_low <= trade.stop:
+                    exit_p = min(bar_open, trade.stop)
+                    trade.exit_price  = round(exit_p, 4)
+                    trade.exit_reason = "stop"
+                    trade.pnl_r = round((exit_p - entry) / risk, 2)
+                    return trade
+                if bar_high >= trade.tp1:
+                    trade.partial_exit_done = True
+                    trade.partial_pnl_r = round((trade.tp1 - entry) / risk, 2)
+                    trade.stop        = entry   # move stop to BE
+                    trade.trail_stop  = entry   # initialise trail at BE
 
-        if trade.trail_to_tp2:
-            if bar_high >= trade.tp2:
-                trade.exit_price  = trade.tp2
-                trade.exit_reason = "tp2"
-                trade.pnl_r = round((trade.tp2 - entry) / risk, 2)
-                return trade
-            if not trade.be_trail and bar_high >= trade.tp1:
-                trade.be_trail = True
-                trade.stop     = entry
+            if trade.partial_exit_done:
+                # Ratchet trail up as price makes new highs
+                new_trail = bar_high - trade.atr * _TRAIL_ATR_MULT
+                trade.trail_stop = max(trade.trail_stop, new_trail, entry)
+                if bar_low <= trade.trail_stop:
+                    exit_p = bar_open if bar_open < trade.trail_stop else trade.trail_stop
+                    r = round((exit_p - entry) / risk, 2)
+                    trade.pnl_r = _blend(trade.partial_pnl_r, r)
+                    trade.exit_price  = round(exit_p, 4)
+                    trade.exit_reason = "trail_stop"
+                    return trade
+
+        # ── Legacy TP1 / TP2 modes ───────────────────────────────────────────
         else:
-            if bar_high >= trade.tp1:
-                trade.exit_price  = trade.tp1
-                trade.exit_reason = "tp1"
-                trade.pnl_r = round((trade.tp1 - entry) / risk, 2)
+            if bar_low <= trade.stop:
+                trade.exit_price  = min(bar_open, trade.stop)
+                trade.exit_reason = "be_stop" if trade.be_trail else "stop"
+                trade.pnl_r = round((trade.exit_price - entry) / risk, 2)
                 return trade
+            if trade.trail_to_tp2:
+                if bar_high >= trade.tp2:
+                    trade.exit_price  = trade.tp2
+                    trade.exit_reason = "tp2"
+                    trade.pnl_r = round((trade.tp2 - entry) / risk, 2)
+                    return trade
+                if not trade.be_trail and bar_high >= trade.tp1:
+                    trade.be_trail = True
+                    trade.stop     = entry
+            else:
+                if bar_high >= trade.tp1:
+                    trade.exit_price  = trade.tp1
+                    trade.exit_reason = "tp1"
+                    trade.pnl_r = round((trade.tp1 - entry) / risk, 2)
+                    return trade
 
     else:  # short
-        hard_cap = entry + 2.0 * trade.atr if trade.atr else None
+        hard_cap = (entry + 2.0 * trade.atr) if trade.atr else None
 
         if hard_cap and bar_high >= hard_cap:
-            trade.exit_price  = hard_cap
+            exit_p = max(bar_open, hard_cap)
+            trade.exit_price  = round(exit_p, 4)
             trade.exit_reason = "max_loss"
-            trade.pnl_r = round((entry - hard_cap) / risk, 2)
+            r = round((entry - exit_p) / risk, 2)
+            trade.pnl_r = _blend(trade.partial_pnl_r, r) if trade.partial_exit_done else r
             return trade
 
-        if bar_high >= trade.stop:
-            trade.exit_price  = max(bar_open, trade.stop)
-            trade.exit_reason = "be_stop" if trade.be_trail else "stop"
-            trade.pnl_r = round((entry - trade.exit_price) / risk, 2)
-            return trade
+        if trade.scale_out_trail:
+            if not trade.partial_exit_done:
+                if bar_high >= trade.stop:
+                    exit_p = max(bar_open, trade.stop)
+                    trade.exit_price  = round(exit_p, 4)
+                    trade.exit_reason = "stop"
+                    trade.pnl_r = round((entry - exit_p) / risk, 2)
+                    return trade
+                if bar_low <= trade.tp1:
+                    trade.partial_exit_done = True
+                    trade.partial_pnl_r = round((entry - trade.tp1) / risk, 2)
+                    trade.stop        = entry
+                    trade.trail_stop  = entry
 
-        if trade.trail_to_tp2:
-            if bar_low <= trade.tp2:
-                trade.exit_price  = trade.tp2
-                trade.exit_reason = "tp2"
-                trade.pnl_r = round((entry - trade.tp2) / risk, 2)
-                return trade
-            if not trade.be_trail and bar_low <= trade.tp1:
-                trade.be_trail = True
-                trade.stop     = entry
+            if trade.partial_exit_done:
+                # Ratchet trail down as price makes new lows
+                new_trail = bar_low + trade.atr * _TRAIL_ATR_MULT
+                trade.trail_stop = min(trade.trail_stop if trade.trail_stop > 0 else entry,
+                                       new_trail, entry)
+                if bar_high >= trade.trail_stop:
+                    exit_p = bar_open if bar_open > trade.trail_stop else trade.trail_stop
+                    r = round((entry - exit_p) / risk, 2)
+                    trade.pnl_r = _blend(trade.partial_pnl_r, r)
+                    trade.exit_price  = round(exit_p, 4)
+                    trade.exit_reason = "trail_stop"
+                    return trade
+
         else:
-            if bar_low <= trade.tp1:
-                trade.exit_price  = trade.tp1
-                trade.exit_reason = "tp1"
-                trade.pnl_r = round((entry - trade.tp1) / risk, 2)
+            if bar_high >= trade.stop:
+                trade.exit_price  = max(bar_open, trade.stop)
+                trade.exit_reason = "be_stop" if trade.be_trail else "stop"
+                trade.pnl_r = round((entry - trade.exit_price) / risk, 2)
                 return trade
+            if trade.trail_to_tp2:
+                if bar_low <= trade.tp2:
+                    trade.exit_price  = trade.tp2
+                    trade.exit_reason = "tp2"
+                    trade.pnl_r = round((entry - trade.tp2) / risk, 2)
+                    return trade
+                if not trade.be_trail and bar_low <= trade.tp1:
+                    trade.be_trail = True
+                    trade.stop     = entry
+            else:
+                if bar_low <= trade.tp1:
+                    trade.exit_price  = trade.tp1
+                    trade.exit_reason = "tp1"
+                    trade.pnl_r = round((entry - trade.tp1) / risk, 2)
+                    return trade
 
     return None
 
@@ -217,11 +293,15 @@ def simulate_symbol(symbol: str,
                 pnl  = (xp - open_trade.entry_price
                         if open_trade.direction == "long"
                         else open_trade.entry_price - xp)
+                remaining_r = round(pnl / risk, 2) if risk else 0
                 open_trade.exit_price  = round(xp, 4)
                 open_trade.exit_reason = "forced_close"
                 open_trade.exit_bar    = i + 1
                 open_trade.exit_time   = _ts(i + 1)
-                open_trade.pnl_r       = round(pnl / risk, 2) if risk else 0
+                open_trade.pnl_r = (
+                    _blend(open_trade.partial_pnl_r, remaining_r)
+                    if open_trade.partial_exit_done else remaining_r
+                )
                 trades.append(asdict(open_trade))
                 cooldown_until = i + 4
                 open_trade = None
@@ -231,11 +311,15 @@ def simulate_symbol(symbol: str,
                 pnl  = (xp - open_trade.entry_price
                         if open_trade.direction == "long"
                         else open_trade.entry_price - xp)
+                remaining_r = round(pnl / risk, 2) if risk else 0
                 open_trade.exit_price  = round(xp, 4)
                 open_trade.exit_reason = "timeout"
                 open_trade.exit_bar    = i + 1
                 open_trade.exit_time   = _ts(i + 1)
-                open_trade.pnl_r       = round(pnl / risk, 2) if risk else 0
+                open_trade.pnl_r = (
+                    _blend(open_trade.partial_pnl_r, remaining_r)
+                    if open_trade.partial_exit_done else remaining_r
+                )
                 trades.append(asdict(open_trade))
                 cooldown_until = i + 4
                 open_trade = None
@@ -297,23 +381,25 @@ def simulate_symbol(symbol: str,
         if rr < 1.2:
             continue
 
-        trail = sig.get("trail", getattr(strategy, "trail_to_tp2", False))
+        trail            = sig.get("trail", getattr(strategy, "trail_to_tp2", False))
+        scale_out_trail  = getattr(strategy, "scale_out_trail", False)
 
         open_trade = Trade(
-            symbol       = symbol,
-            direction    = sig["direction"],
-            signal_type  = sig["signal_type"],
-            entry_bar    = i + 1,
-            entry_time   = _ts(i + 1),
-            entry_price  = round(entry, 4),
-            stop         = round(stop, 4),
-            tp1          = tgts["tp1"],
-            tp2          = tgts["tp2"],
-            shares       = pos["shares"],
-            regime       = sig.get("regime"),
-            atr          = sig["atr"],
-            initial_risk = risk,
-            trail_to_tp2 = trail,
+            symbol          = symbol,
+            direction       = sig["direction"],
+            signal_type     = sig["signal_type"],
+            entry_bar       = i + 1,
+            entry_time      = _ts(i + 1),
+            entry_price     = round(entry, 4),
+            stop            = round(stop, 4),
+            tp1             = tgts["tp1"],
+            tp2             = tgts["tp2"],
+            shares          = pos["shares"],
+            regime          = sig.get("regime"),
+            atr             = sig["atr"],
+            initial_risk    = risk,
+            trail_to_tp2    = trail,
+            scale_out_trail = scale_out_trail,
         )
 
     return trades

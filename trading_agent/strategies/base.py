@@ -33,6 +33,10 @@ class BaseStrategy:
     # When False (default): exit the full position at TP1.
     trail_to_tp2: bool = False
 
+    # When True: exit 50% at TP1, then trail remainder with ATR stop.
+    # Takes priority over trail_to_tp2 when both are set.
+    scale_out_trail: bool = False
+
     # Override the simulator default (16 bars). None = use simulator default.
     max_hold_bars: Optional[int] = None
 

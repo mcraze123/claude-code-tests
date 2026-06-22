@@ -137,9 +137,10 @@ class NYOpenStrategy(BaseStrategy):
     Intraday NY Kill Zone strategy.  Never holds overnight.
     Uses BE trail → TP2 exit since momentum is expected in the kill zone.
     """
-    name          = "ny_open"
-    trail_to_tp2  = True    # hold for TP2 after TP1 hit; hard cap prevents blowups
-    max_hold_bars = 4       # 4 × 1H bars = max 4 hours in a trade
+    name             = "ny_open"
+    scale_out_trail  = True  # 50% off at TP1 (1×ATR), then ATR trail on remainder
+    trail_to_tp2     = False
+    max_hold_bars    = 4     # 4 × 1H bars = max 4 hours in a trade
 
     def __init__(self) -> None:
         self._hmm = HMMRegimeFilter(n_states=3, lookback=60)
