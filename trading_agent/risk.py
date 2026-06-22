@@ -30,24 +30,25 @@ def position_size(account_value: float, entry: float, stop: float) -> dict:
     }
 
 
-def profit_targets(entry: float, stop: float, bias: str, atr_val: float = None) -> dict:
+def profit_targets(entry: float, stop: float, bias: str,
+                   atr_val: float = None, tp_mult: float = 2.0) -> dict:
     """
-    Three tiered targets:
-      TP1 = 1.5R  (or 1× ATR)  — scale out 50%
-      TP2 = 2.5R  (or 2× ATR)  — scale out 30%
-      TP3 = 4R    (or 3× ATR)  — runner
+    Three tiered targets.  tp_mult scales TP2 (and TP3):
+      TP1 = 1× ATR  (constant — first scale-out / trail trigger)
+      TP2 = tp_mult × ATR  (main exit; 2.0 standard, 3.0 high-confidence)
+      TP3 = tp_mult × 1.5 × ATR  (runner)
     """
     risk = abs(entry - stop)
     direction = 1 if bias in ("bullish", "long") else -1
 
     if atr_val and atr_val > 0:
         tp1 = entry + direction * atr_val * 1.0
-        tp2 = entry + direction * atr_val * 2.0
-        tp3 = entry + direction * atr_val * 3.5
+        tp2 = entry + direction * atr_val * tp_mult
+        tp3 = entry + direction * atr_val * tp_mult * 1.5
     else:
         tp1 = entry + direction * risk * 1.5
-        tp2 = entry + direction * risk * 2.5
-        tp3 = entry + direction * risk * 4.0
+        tp2 = entry + direction * risk * tp_mult * 1.25
+        tp3 = entry + direction * risk * tp_mult * 2.0
 
     return {
         "tp1": round(tp1, 2),

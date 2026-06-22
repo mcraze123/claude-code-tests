@@ -60,6 +60,39 @@ def cmf(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return mfv.rolling(period).sum() / vol_sum
 
 
+def swing_points(df: pd.DataFrame, window: int = 5) -> dict:
+    """
+    Pivot-based swing high/low detection.
+    Compares each bar to window bars on each side.
+    Returns last_high, last_low, swing structure, and recent lists.
+    """
+    highs: list[float] = []
+    lows:  list[float] = []
+    n = len(df)
+    for i in range(window, n - window):
+        hi = df["High"].iloc[i]
+        lo = df["Low"].iloc[i]
+        if hi >= float(df["High"].iloc[i - window: i + window + 1].max()):
+            highs.append(float(hi))
+        if lo <= float(df["Low"].iloc[i - window: i + window + 1].min()):
+            lows.append(float(lo))
+
+    structure = "neutral"
+    if len(highs) >= 2 and len(lows) >= 2:
+        if highs[-1] > highs[-2] and lows[-1] > lows[-2]:
+            structure = "bullish"   # higher high + higher low
+        elif highs[-1] < highs[-2] and lows[-1] < lows[-2]:
+            structure = "bearish"   # lower high + lower low
+
+    return {
+        "last_high": highs[-1] if highs else None,
+        "last_low":  lows[-1]  if lows  else None,
+        "structure": structure,
+        "highs":     highs[-3:],
+        "lows":      lows[-3:],
+    }
+
+
 def bollinger(df: pd.DataFrame, period: int = 20, std: float = 2.0) -> pd.DataFrame:
     mid = df["Close"].rolling(period).mean()
     s = df["Close"].rolling(period).std()

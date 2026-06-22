@@ -37,7 +37,8 @@ class BaseStrategy:
     max_hold_bars: Optional[int] = None
 
     def generate_signal(self, df_slice: pd.DataFrame, daily_trend: str,
-                        df_15m: "Optional[pd.DataFrame]" = None) -> Optional[dict]:
+                        df_15m: "Optional[pd.DataFrame]" = None,
+                        df_4h:  "Optional[pd.DataFrame]" = None) -> Optional[dict]:
         raise NotImplementedError
 
     def fit(self, df: pd.DataFrame) -> None:

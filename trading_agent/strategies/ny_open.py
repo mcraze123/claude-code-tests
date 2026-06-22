@@ -39,7 +39,9 @@ from typing import Optional
 
 from .base import BaseStrategy
 from .hmm_filter import HMMRegimeFilter
-from ..analysis import order_blocks, fair_value_gaps, cmf as calc_cmf, rsi as calc_rsi, atr as calc_atr
+from ..analysis import (order_blocks, fair_value_gaps, swing_points,
+                        cmf as calc_cmf, rsi as calc_rsi, atr as calc_atr,
+                        ema as calc_ema)
 
 ET = pytz.timezone("America/New_York")
 
@@ -153,7 +155,8 @@ class NYOpenStrategy(BaseStrategy):
     # ── Signal generation ─────────────────────────────────────────────────────
     def generate_signal(self, df_slice: pd.DataFrame,
                         daily_trend: str,
-                        df_15m: Optional[pd.DataFrame] = None) -> Optional[dict]:
+                        df_15m: Optional[pd.DataFrame] = None,
+                        df_4h:  Optional[pd.DataFrame] = None) -> Optional[dict]:
         if len(df_slice) < 30:
             return None
 
@@ -192,6 +195,23 @@ class NYOpenStrategy(BaseStrategy):
         levels = _session_levels(df_slice, bar_et)
         fvgs   = fair_value_gaps(df_slice, lookback=60)
 
+        # ── Multi-timeframe context ───────────────────────────────────────────
+        # 4H trend and swing structure for confidence scoring + premium/discount
+        trend_4h = "neutral"
+        swing    = {"last_high": None, "last_low": None, "structure": "neutral"}
+        if df_4h is not None and len(df_4h) >= 21:
+            e9  = float(calc_ema(df_4h, 9).iloc[-1])
+            e21 = float(calc_ema(df_4h, 21).iloc[-1])
+            p4h = float(df_4h["Close"].iloc[-1])
+            if p4h > e9 > e21:
+                trend_4h = "bullish"
+            elif p4h < e9 < e21:
+                trend_4h = "bearish"
+            if len(df_4h) >= 15:
+                swing = swing_points(df_4h, window=3)
+        elif len(df_slice) >= 15:
+            swing = swing_points(df_slice, window=5)
+
         # Bar reversal confirmation: signal bar must close in the entry direction
         bar_close = float(df_slice["Close"].iloc[-1])
         bar_open_ = float(df_slice["Open"].iloc[-1])
@@ -213,14 +233,18 @@ class NYOpenStrategy(BaseStrategy):
                     stop = round(stop, 4)
                     risk_ = price - stop
                     if stop < price and risk_ >= price * 0.001 and atr_v / risk_ >= MIN_RR:
+                        tp_mult, trail = self._tp_from_confidence(
+                            "long", daily_trend, trend_4h, swing, price, regime
+                        )
                         return {
                             "direction":   "long",
                             "signal_type": "fvg_fill",
                             "entry":       price,
                             "stop":        stop,
                             "atr":         atr_v,
+                            "tp_mult":     tp_mult,
+                            "trail":       trail,
                             "regime":      regime,
-                            "session_levels": {k: v for k, v in levels.items() if v},
                         }
 
         # ── Bearish setup ────────────────────────────────────────────────────
@@ -238,14 +262,18 @@ class NYOpenStrategy(BaseStrategy):
                     stop = round(stop, 4)
                     risk_ = stop - price
                     if stop > price and risk_ >= price * 0.001 and atr_v / risk_ >= MIN_RR:
+                        tp_mult, trail = self._tp_from_confidence(
+                            "short", daily_trend, trend_4h, swing, price, regime
+                        )
                         return {
                             "direction":   "short",
                             "signal_type": "fvg_fill",
                             "entry":       price,
                             "stop":        stop,
                             "atr":         atr_v,
+                            "tp_mult":     tp_mult,
+                            "trail":       trail,
                             "regime":      regime,
-                            "session_levels": {k: v for k, v in levels.items() if v},
                         }
 
         # ── OB Sweep on 15M ──────────────────────────────────────────────────
@@ -257,7 +285,8 @@ class NYOpenStrategy(BaseStrategy):
             if len(df_15m_local) >= 12:
                 obs_15m = order_blocks(df_15m_local, lookback=20)
                 ob_sig  = self._check_ob_sweep_15m(
-                    df_15m_local, obs_15m, atr_v, rsi_v, daily_trend, levels
+                    df_15m_local, obs_15m, atr_v, rsi_v,
+                    daily_trend, trend_4h, swing, levels
                 )
                 if ob_sig:
                     return ob_sig
@@ -288,9 +317,73 @@ class NYOpenStrategy(BaseStrategy):
             and f["bottom"] * (1 - FVG_ZONE_PCT) <= price <= f["top"] * (1 + FVG_ZONE_PCT)
         ]
 
+    def _market_zone(self, price: float, swing: dict) -> str:
+        """
+        Price position within the swing range.
+        discount = lower 33% (buy zone), premium = upper 33% (sell zone).
+        """
+        sh = swing.get("last_high")
+        sl = swing.get("last_low")
+        if sh is None or sl is None or sh <= sl:
+            return "unknown"
+        pct = (price - sl) / (sh - sl)
+        if pct <= 0.33:
+            return "discount"
+        if pct >= 0.67:
+            return "premium"
+        return "equilibrium"
+
+    def _tp_from_confidence(self, direction: str, daily_trend: str, trend_4h: str,
+                             swing: dict, price: float, regime: str) -> tuple[float, bool]:
+        """
+        Score setup confidence (0-1) from trend alignment, swing structure,
+        and premium/discount zone.  Returns (tp_mult, trail_to_tp2).
+
+        Score thresholds:
+          >= 0.75 → high confidence: tp_mult=3.0, trail=True
+          >= 0.55 → medium: tp_mult=2.0, trail=True
+          < 0.55  → low: tp_mult=1.0, trail=False  (exit at TP1, cut early)
+        """
+        score = 0.40  # base
+
+        # Daily trend alignment
+        if (direction == "long"  and daily_trend == "bullish") or \
+           (direction == "short" and daily_trend == "bearish"):
+            score += 0.15
+
+        # 4H trend alignment
+        if (direction == "long"  and trend_4h == "bullish") or \
+           (direction == "short" and trend_4h == "bearish"):
+            score += 0.15
+
+        # Swing structure alignment (HH+HL = bullish, LH+LL = bearish)
+        struct = swing.get("structure", "neutral")
+        if (direction == "long"  and struct == "bullish") or \
+           (direction == "short" and struct == "bearish"):
+            score += 0.15
+
+        # Premium/discount zone alignment
+        zone = self._market_zone(price, swing)
+        if (direction == "long"  and zone == "discount") or \
+           (direction == "short" and zone == "premium"):
+            score += 0.10
+
+        # HMM trending regime adds slight bonus
+        if regime == "trending":
+            score += 0.05
+
+        score = min(1.0, score)
+
+        if score >= 0.75:
+            return 3.0, True    # high confidence: run to 3×ATR
+        if score >= 0.55:
+            return 2.0, True    # medium: standard trail to 2×ATR
+        return 1.0, False       # low: take profit at TP1, don't trail
+
     def _check_ob_sweep_15m(self, df: pd.DataFrame, obs: list,
                              atr_1h: float, rsi_v: float,
-                             daily_trend: str, levels: dict) -> Optional[dict]:
+                             daily_trend: str, trend_4h: str,
+                             swing: dict, levels: dict) -> Optional[dict]:
         """
         Scan the last 8 15M bars for an OB sweep + volume spike + CMF confirmation.
 
@@ -341,12 +434,17 @@ class NYOpenStrategy(BaseStrategy):
                         stop  = round(stop, 4)
                         risk_ = price - stop
                         if stop < price and risk_ >= price * 0.001 and atr_1h / risk_ >= MIN_RR:
+                            tp_mult, trail = self._tp_from_confidence(
+                                "long", daily_trend, trend_4h, swing, price, "unknown"
+                            )
                             return {
                                 "direction":   "long",
                                 "signal_type": "ob_sweep",
                                 "entry":       price,
                                 "stop":        stop,
                                 "atr":         atr_1h,
+                                "tp_mult":     tp_mult,
+                                "trail":       trail,
                                 "ob_zone":     [ob_low, float(ob["high"])],
                             }
 
@@ -366,12 +464,17 @@ class NYOpenStrategy(BaseStrategy):
                         stop  = round(stop, 4)
                         risk_ = stop - price
                         if stop > price and risk_ >= price * 0.001 and atr_1h / risk_ >= MIN_RR:
+                            tp_mult, trail = self._tp_from_confidence(
+                                "short", daily_trend, trend_4h, swing, price, "unknown"
+                            )
                             return {
                                 "direction":   "short",
                                 "signal_type": "ob_sweep",
                                 "entry":       price,
                                 "stop":        stop,
                                 "atr":         atr_1h,
+                                "tp_mult":     tp_mult,
+                                "trail":       trail,
                                 "ob_zone":     [float(ob["low"]), ob_high],
                             }
 

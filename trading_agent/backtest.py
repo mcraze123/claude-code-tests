@@ -20,14 +20,32 @@ from .risk import position_size, profit_targets
 from .strategies.base import BaseStrategy
 
 
-# ── Daily trend helper ────────────────────────────────────────────────────────
+# ── Trend helpers ─────────────────────────────────────────────────────────────
+
+MAX_CONSEC_LOSSES = 3   # circuit breaker: pause after this many losses in a row
+
 
 def _daily_trend(df_daily: pd.DataFrame, as_of: pd.Timestamp) -> str:
     subset = df_daily[df_daily.index.date < as_of.date()]
     if len(subset) < 21:
         return "neutral"
-    e9   = float(ema(subset, 9).iloc[-1])
-    e21  = float(ema(subset, 21).iloc[-1])
+    e9    = float(ema(subset, 9).iloc[-1])
+    e21   = float(ema(subset, 21).iloc[-1])
+    price = float(subset["Close"].iloc[-1])
+    if price > e9 > e21:
+        return "bullish"
+    if price < e9 < e21:
+        return "bearish"
+    return "neutral"
+
+
+def _trend_bias(df: pd.DataFrame, as_of: pd.Timestamp) -> str:
+    """EMA9/21 trend on any timeframe — bars strictly before as_of."""
+    subset = df[df.index < as_of]
+    if len(subset) < 21:
+        return "neutral"
+    e9    = float(ema(subset, 9).iloc[-1])
+    e21   = float(ema(subset, 21).iloc[-1])
     price = float(subset["Close"].iloc[-1])
     if price > e9 > e21:
         return "bullish"
@@ -149,6 +167,7 @@ def simulate_symbol(symbol: str,
                     df_daily: pd.DataFrame,
                     strategy: BaseStrategy,
                     df_15m: Optional[pd.DataFrame] = None,
+                    df_4h:  Optional[pd.DataFrame] = None,
                     account_value: float = 10_000,
                     warmup_bars: int = 20,
                     max_hold_bars: int = 16,
@@ -163,6 +182,10 @@ def simulate_symbol(symbol: str,
     trades: list[Trade] = []
     open_trade: Optional[Trade] = None
     cooldown_until: int = 0
+
+    # ── Circuit breaker state ────────────────────────────────────────────────
+    consecutive_losses: int = 0
+    circuit_breaker_until: Optional[object] = None   # date: resume on this day
 
     def _ts(idx: int) -> str:
         return str(df_1h.index[idx]) if idx < len(df_1h) else ""
@@ -216,16 +239,37 @@ def simulate_symbol(symbol: str,
                 trades.append(asdict(open_trade))
                 cooldown_until = i + 4
                 open_trade = None
+
+            if open_trade is None and trades:
+                last_pnl = trades[-1].get("pnl_r", 0) or 0
+                if last_pnl < 0:
+                    consecutive_losses += 1
+                    if consecutive_losses >= MAX_CONSEC_LOSSES:
+                        import datetime as _dt
+                        exit_date = df_1h.index[min(i + 1, len(df_1h) - 1)].date()
+                        circuit_breaker_until = exit_date + _dt.timedelta(days=1)
+                else:
+                    consecutive_losses = 0
             continue
 
         if i < cooldown_until:
             continue
 
+        # ── Circuit breaker ──────────────────────────────────────────────────
+        if circuit_breaker_until is not None:
+            if bar_time.date() < circuit_breaker_until:
+                continue
+            else:
+                circuit_breaker_until = None
+                consecutive_losses    = 0
+
         # ── Look for new signal ──────────────────────────────────────────────
-        df_slice    = df_1h.iloc[: i + 1]
-        d_trend     = _daily_trend(df_daily, bar_time)
+        df_slice     = df_1h.iloc[: i + 1]
+        d_trend      = _daily_trend(df_daily, bar_time)
         df_15m_slice = (df_15m[df_15m.index <= bar_time] if df_15m is not None else None)
-        sig          = strategy.generate_signal(df_slice, d_trend, df_15m=df_15m_slice)
+        df_4h_slice  = (df_4h[df_4h.index   <= bar_time] if df_4h  is not None else None)
+        sig          = strategy.generate_signal(
+                           df_slice, d_trend, df_15m=df_15m_slice, df_4h=df_4h_slice)
 
         if sig is None:
             continue
@@ -245,12 +289,15 @@ def simulate_symbol(symbol: str,
         if sig.get("atr") and risk < sig["atr"] * 0.20:
             continue
 
-        tgts = profit_targets(entry, stop, sig["direction"], sig["atr"])
+        tp_mult = float(sig.get("tp_mult", 2.0))
+        tgts = profit_targets(entry, stop, sig["direction"], sig["atr"], tp_mult=tp_mult)
         pos  = position_size(account_value, entry, stop)
 
         rr = abs(tgts["tp1"] - entry) / risk
         if rr < 1.2:
             continue
+
+        trail = sig.get("trail", getattr(strategy, "trail_to_tp2", False))
 
         open_trade = Trade(
             symbol       = symbol,
@@ -266,7 +313,7 @@ def simulate_symbol(symbol: str,
             regime       = sig.get("regime"),
             atr          = sig["atr"],
             initial_risk = risk,
-            trail_to_tp2 = getattr(strategy, "trail_to_tp2", False),
+            trail_to_tp2 = trail,
         )
 
     return trades
@@ -453,7 +500,7 @@ def run_backtest(symbols: list[str],
     strategy = get_strategy(strategy_name)
     print(f"Strategy: {strategy.name}", flush=True)
 
-    uses_15m = strategy_name == "ny_open"
+    needs_multi_tf = strategy_name == "ny_open"
 
     all_trades: list[dict] = []
     for sym in symbols:
@@ -463,8 +510,10 @@ def run_backtest(symbols: list[str],
         if df_1h.empty or df_daily.empty:
             print(f"  {sym}: no data, skipping")
             continue
-        df_15m = get_ohlcv(sym, "15m") if uses_15m else None
-        trades = simulate_symbol(sym, df_1h, df_daily, strategy, df_15m, account_value)
+        df_15m = get_ohlcv(sym, "15m") if needs_multi_tf else None
+        df_4h  = get_ohlcv(sym, "4h")  if needs_multi_tf else None
+        trades = simulate_symbol(sym, df_1h, df_daily, strategy,
+                                 df_15m, df_4h, account_value)
         print(f"  {sym}: {len(trades)} trades")
         all_trades.extend(trades)
 
