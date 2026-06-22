@@ -290,16 +290,14 @@ class NYOpenStrategy(BaseStrategy):
                         }
 
         # ── OB Sweep on 15M ──────────────────────────────────────────────────
-        # 1H bars are too coarse — by close, the reversal is over.
-        # On 15M we catch the wick-and-recover within minutes, confirm with
-        # a CMF sign change and a volume spike on the sweep bar.
+        # Use 1H OBs as target levels (institutional scale) and detect the
+        # sweep on 15M bars (precision timing before 1H bar closes).
         if df_15m is not None and len(df_15m) >= 20:
-            df_15m_local = df_15m[df_15m.index <= df_slice.index[-1]].tail(20)
+            df_15m_local = df_15m[df_15m.index <= df_slice.index[-1]].tail(24)
             if len(df_15m_local) >= 12:
-                obs_15m = order_blocks(df_15m_local, lookback=20)
-                ob_sig  = self._check_ob_sweep_15m(
-                    df_15m_local, obs_15m, atr_v, rsi_v,
-                    daily_trend, trend_4h, swing, levels
+                ob_sig = self._check_ob_sweep_15m(
+                    df_15m_local, df_slice,
+                    atr_v, rsi_v, daily_trend, trend_4h, swing
                 )
                 if ob_sig:
                     return ob_sig
@@ -412,26 +410,43 @@ class NYOpenStrategy(BaseStrategy):
             return 2.0, True, True    # medium: trail to 2×ATR
         return 1.0, False, False      # low: clean exit at TP1, no scale/trail
 
-    def _check_ob_sweep_15m(self, df: pd.DataFrame, obs: list,
+    def _check_ob_sweep_15m(self, df_15m: pd.DataFrame, df_1h: pd.DataFrame,
                              atr_1h: float, rsi_v: float,
                              daily_trend: str, trend_4h: str,
-                             swing: dict, levels: dict) -> Optional[dict]:
+                             swing: dict) -> Optional[dict]:
         """
-        Scan the last 8 15M bars for an OB sweep + volume spike + CMF confirmation.
+        Multi-timeframe OB sweep: 1H OBs as target levels, 15M bars as triggers.
 
-        Filters:
-          - Sweep bar volume >= 1.5× 20-bar average (genuine liquidity grab)
-          - CMF >= 0 on recovery bar for longs, <= 0 for shorts (money flow confirms)
-          - Sweep wick must reach a session level
+        1H order blocks represent genuine institutional demand/supply — larger
+        bodies, more volume, more meaningful than 15M micro-OBs.  The 15M bar
+        provides precision entry timing: we catch the sweep wick and recovery
+        before the 1H bar has even closed, entering ahead of most participants.
+
+        Entry conditions (all must hold):
+          - Confirmed daily trend (bullish for longs / bearish for shorts).
+            Neutral days are skipped — OBs need directional conviction.
+          - 15M sweep bar wicks through the 1H OB boundary and closes back
+            inside (wick = liquidity grab; close = smart money reversal).
+          - 15M sweep bar volume >= 1.5× its 20-bar rolling average.
+          - CMF >= 0 (longs) / <= 0 (shorts) on the sweep bar.
+          - 1H OB body >= 0.25×ATR — filters micro/noise OBs.
         """
-        atr_series = calc_atr(df)
-        cmf_series = calc_cmf(df, period=8)   # shorter period suits 15M granularity
-        vol_ma     = df["Volume"].rolling(20).mean()
+        # 1H OBs are the significant target levels
+        obs_1h = order_blocks(df_1h, lookback=30)
+        # Filter out micro OBs — body must be at least 25% of 1H ATR
+        obs_1h = [ob for ob in obs_1h
+                  if (float(ob["high"]) - float(ob["low"])) >= atr_1h * 0.25]
+        if not obs_1h:
+            return None
 
-        # Scan last 8 bars in reverse — return the most recent qualifying sweep
-        scan_start = max(0, len(df) - 8)
-        for idx in range(len(df) - 1, scan_start - 1, -1):
-            bar       = df.iloc[idx]
+        atr_series = calc_atr(df_15m)
+        cmf_series = calc_cmf(df_15m, period=8)
+        vol_ma     = df_15m["Volume"].rolling(20).mean()
+
+        # Scan last 12 15M bars in reverse — most recent qualifying sweep wins
+        scan_start = max(0, len(df_15m) - 12)
+        for idx in range(len(df_15m) - 1, scan_start - 1, -1):
+            bar       = df_15m.iloc[idx]
             bar_low   = float(bar["Low"])
             bar_high  = float(bar["High"])
             bar_close = float(bar["Close"])
@@ -442,32 +457,31 @@ class NYOpenStrategy(BaseStrategy):
             if pd.isna(atr_15m) or atr_15m == 0:
                 atr_15m = atr_1h * 0.25
 
-            # Volume spike: sweep bar must have elevated volume
+            # Volume spike required
             vol_avg = float(vol_ma.iloc[idx]) if not pd.isna(vol_ma.iloc[idx]) else 0
             if vol_avg > 0 and bar_vol < vol_avg * 1.5:
                 continue
 
-            # CMF at this bar
             cmf_val = float(cmf_series.iloc[idx]) if not pd.isna(cmf_series.iloc[idx]) else 0.0
 
-            # ── Bullish sweep ─────────────────────────────────────────────────
-            if daily_trend in ("bullish", "neutral") and rsi_v < RSI_LONG_MAX \
+            # ── Bullish sweep — confirmed uptrend only ────────────────────────
+            if daily_trend == "bullish" and rsi_v < RSI_LONG_MAX \
                     and bar_close > bar_open_ and cmf_val >= 0:
-                for ob in obs:
+                for ob in obs_1h:
                     if ob["type"] != "bullish":
                         continue
                     ob_low = float(ob["low"])
+                    # Wick swept below OB bottom; close recovered back inside
                     if bar_low < ob_low and bar_close >= ob_low:
-                        if not self._price_at_level(bar_low, levels, side="low"):
-                            continue
                         price = bar_close
                         stop  = bar_low - atr_15m * 0.5
                         stop  = min(stop, price - atr_1h * MIN_RISK_ATR)
                         stop  = round(stop, 4)
                         risk_ = price - stop
-                        if stop < price and risk_ >= price * 0.001 and atr_1h / risk_ >= MIN_RR:
+                        if stop < price and risk_ >= price * 0.001 \
+                                and atr_1h / risk_ >= MIN_RR:
                             tp_mult, trail, scale_out = self._tp_from_confidence(
-                                "long", daily_trend, trend_4h, swing, price, "unknown"
+                                "long", daily_trend, trend_4h, swing, price, "trending"
                             )
                             return {
                                 "direction":    "long",
@@ -481,24 +495,24 @@ class NYOpenStrategy(BaseStrategy):
                                 "ob_zone":      [ob_low, float(ob["high"])],
                             }
 
-            # ── Bearish sweep ─────────────────────────────────────────────────
-            if daily_trend in ("bearish", "neutral") and rsi_v > RSI_SHORT_MIN \
+            # ── Bearish sweep — confirmed downtrend only ──────────────────────
+            if daily_trend == "bearish" and rsi_v > RSI_SHORT_MIN \
                     and bar_close < bar_open_ and cmf_val <= 0:
-                for ob in obs:
+                for ob in obs_1h:
                     if ob["type"] != "bearish":
                         continue
                     ob_high = float(ob["high"])
+                    # Wick swept above OB top; close recovered back inside
                     if bar_high > ob_high and bar_close <= ob_high:
-                        if not self._price_at_level(bar_high, levels, side="high"):
-                            continue
                         price = bar_close
                         stop  = bar_high + atr_15m * 0.5
                         stop  = max(stop, price + atr_1h * MIN_RISK_ATR)
                         stop  = round(stop, 4)
                         risk_ = stop - price
-                        if stop > price and risk_ >= price * 0.001 and atr_1h / risk_ >= MIN_RR:
+                        if stop > price and risk_ >= price * 0.001 \
+                                and atr_1h / risk_ >= MIN_RR:
                             tp_mult, trail, scale_out = self._tp_from_confidence(
-                                "short", daily_trend, trend_4h, swing, price, "unknown"
+                                "short", daily_trend, trend_4h, swing, price, "trending"
                             )
                             return {
                                 "direction":    "short",
