@@ -223,9 +223,23 @@ class NYOpenStrategy(BaseStrategy):
         bar_green = bar_close >= bar_open_
         bar_red   = bar_close < bar_open_
 
-        # ── Bullish setup ────────────────────────────────────────────────────
-        # Price at/near a session LOW with a bullish FVG at that level.
-        # Signal bar must close green — the bounce is already forming.
+        # ── OB Sweep on 15M — first priority on confirmed-trend days ─────────
+        # 1H OBs as target levels; 15M bars for sweep detection.
+        # Checked before fvg_fill so that on trending days the higher-quality
+        # OB setup takes precedence over the session-level FVG fill.
+        if df_15m is not None and len(df_15m) >= 20:
+            df_15m_local = df_15m[df_15m.index <= df_slice.index[-1]].tail(24)
+            if len(df_15m_local) >= 12:
+                ob_sig = self._check_ob_sweep_15m(
+                    df_15m_local, df_slice,
+                    atr_v, rsi_v, daily_trend, trend_4h, swing
+                )
+                if ob_sig:
+                    return ob_sig
+
+        # ── Bullish FVG fill — session level sweep + FVG confirmation ────────
+        # Fires on confirmed bullish AND neutral-trend days (where OB sweep
+        # didn't qualify).  Requires bar to have wicked through session low.
         if daily_trend in ("bullish", "neutral") and rsi_v < RSI_LONG_MAX and bar_green:
             at_low = self._price_at_level(price, levels, side="low", bar_extreme=bar_low)
 
@@ -256,9 +270,7 @@ class NYOpenStrategy(BaseStrategy):
                             "regime":       regime,
                         }
 
-        # ── Bearish setup ────────────────────────────────────────────────────
-        # Price at/near a session HIGH with a bearish FVG at that level.
-        # Signal bar must close red — the rejection is already forming.
+        # ── Bearish FVG fill ──────────────────────────────────────────────────
         if daily_trend in ("bearish", "neutral") and rsi_v > RSI_SHORT_MIN and bar_red:
             at_high = self._price_at_level(price, levels, side="high", bar_extreme=bar_high)
 
@@ -288,19 +300,6 @@ class NYOpenStrategy(BaseStrategy):
                             "scale_out_trail": scale_out,
                             "regime":       regime,
                         }
-
-        # ── OB Sweep on 15M ──────────────────────────────────────────────────
-        # Use 1H OBs as target levels (institutional scale) and detect the
-        # sweep on 15M bars (precision timing before 1H bar closes).
-        if df_15m is not None and len(df_15m) >= 20:
-            df_15m_local = df_15m[df_15m.index <= df_slice.index[-1]].tail(24)
-            if len(df_15m_local) >= 12:
-                ob_sig = self._check_ob_sweep_15m(
-                    df_15m_local, df_slice,
-                    atr_v, rsi_v, daily_trend, trend_4h, swing
-                )
-                if ob_sig:
-                    return ob_sig
 
         return None
 
@@ -443,8 +442,8 @@ class NYOpenStrategy(BaseStrategy):
         cmf_series = calc_cmf(df_15m, period=8)
         vol_ma     = df_15m["Volume"].rolling(20).mean()
 
-        # Scan last 12 15M bars in reverse — most recent qualifying sweep wins
-        scan_start = max(0, len(df_15m) - 12)
+        # Scan last 16 15M bars in reverse — most recent qualifying sweep wins
+        scan_start = max(0, len(df_15m) - 16)
         for idx in range(len(df_15m) - 1, scan_start - 1, -1):
             bar       = df_15m.iloc[idx]
             bar_low   = float(bar["Low"])
@@ -457,15 +456,21 @@ class NYOpenStrategy(BaseStrategy):
             if pd.isna(atr_15m) or atr_15m == 0:
                 atr_15m = atr_1h * 0.25
 
-            # Volume spike required
+            # Volume spike: 1.3× average (slightly relaxed from 1.5×)
             vol_avg = float(vol_ma.iloc[idx]) if not pd.isna(vol_ma.iloc[idx]) else 0
-            if vol_avg > 0 and bar_vol < vol_avg * 1.5:
+            if vol_avg > 0 and bar_vol < vol_avg * 1.3:
                 continue
 
             cmf_val = float(cmf_series.iloc[idx]) if not pd.isna(cmf_series.iloc[idx]) else 0.0
 
-            # ── Bullish sweep — confirmed uptrend only ────────────────────────
-            if daily_trend == "bullish" and rsi_v < RSI_LONG_MAX \
+            # Directional bias: confirmed daily OR neutral daily with 4H backing
+            bull_bias = (daily_trend == "bullish") or \
+                        (daily_trend == "neutral" and trend_4h == "bullish")
+            bear_bias = (daily_trend == "bearish") or \
+                        (daily_trend == "neutral" and trend_4h == "bearish")
+
+            # ── Bullish sweep ─────────────────────────────────────────────────
+            if bull_bias and rsi_v < RSI_LONG_MAX \
                     and bar_close > bar_open_ and cmf_val >= 0:
                 for ob in obs_1h:
                     if ob["type"] != "bullish":
@@ -495,8 +500,8 @@ class NYOpenStrategy(BaseStrategy):
                                 "ob_zone":      [ob_low, float(ob["high"])],
                             }
 
-            # ── Bearish sweep — confirmed downtrend only ──────────────────────
-            if daily_trend == "bearish" and rsi_v > RSI_SHORT_MIN \
+            # ── Bearish sweep ─────────────────────────────────────────────────
+            if bear_bias and rsi_v > RSI_SHORT_MIN \
                     and bar_close < bar_open_ and cmf_val <= 0:
                 for ob in obs_1h:
                     if ob["type"] != "bearish":
