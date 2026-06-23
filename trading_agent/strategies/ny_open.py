@@ -303,6 +303,159 @@ class NYOpenStrategy(BaseStrategy):
 
         return None
 
+    # ── 15M-primary OB sweep entry ────────────────────────────────────────────
+
+    def generate_ob_sweep_signal(self, df_15m: pd.DataFrame,
+                                  df_1h: pd.DataFrame,
+                                  daily_trend: str,
+                                  df_4h: Optional[pd.DataFrame] = None) -> Optional[dict]:
+        """
+        Velocity-filtered OB sweep signal on 15M bars.
+
+        Called bar-by-bar from a 15M simulation loop so the entry fires at
+        the NEXT 15M open — 15 minutes after the sweep, not 60.  Waiting a
+        full 1H bar means the institutional move is already over.
+
+        Velocity filter: the sweep candle must have range > 1.3×ATR (the
+        fast stop-hunt move) AND close in the upper 45%+ of its range for
+        longs (lower 55% for shorts) — confirming the wick-and-recovery.
+        """
+        if len(df_15m) < 20 or len(df_1h) < 20:
+            return None
+
+        bar_et = _to_et(df_15m.index[-1])
+        t = bar_et.time()
+        if not (KILL_ZONE_START <= t < KILL_ZONE_END):
+            return None
+
+        bar      = df_15m.iloc[-1]
+        bar_low  = float(bar["Low"])
+        bar_high = float(bar["High"])
+        bar_close = float(bar["Close"])
+        bar_range = bar_high - bar_low
+
+        atr_series_15m = calc_atr(df_15m)
+        atr_15m = float(atr_series_15m.iloc[-1])
+        if pd.isna(atr_15m) or atr_15m == 0:
+            atr_15m = bar_range if bar_range > 0 else 0.01
+
+        # ── Velocity gate ─────────────────────────────────────────────────────
+        # The sweep candle must be high-range — institutional stop-hunt move.
+        if bar_range < atr_15m * 1.3:
+            return None
+
+        # Recovery metric: where did the close land within the bar's range?
+        # 0 = closed at the low (no recovery), 1 = closed at the high (full recovery)
+        close_pct = (bar_close - bar_low) / bar_range if bar_range > 0 else 0.5
+
+        rsi_v = float(calc_rsi(df_1h).iloc[-1]) if len(df_1h) >= 14 else 50.0
+        atr_1h = float(calc_atr(df_1h).iloc[-1]) if len(df_1h) >= 14 else atr_15m * 4
+        if pd.isna(rsi_v):
+            rsi_v = 50.0
+        if pd.isna(atr_1h) or atr_1h == 0:
+            atr_1h = atr_15m * 4
+
+        # 4H trend + swing for confidence scoring
+        trend_4h = "neutral"
+        swing = {"last_high": None, "last_low": None, "structure": "neutral"}
+        if df_4h is not None and len(df_4h) >= 21:
+            e9  = float(calc_ema(df_4h, 9).iloc[-1])
+            e21 = float(calc_ema(df_4h, 21).iloc[-1])
+            p4h = float(df_4h["Close"].iloc[-1])
+            if p4h > e9 > e21:
+                trend_4h = "bullish"
+            elif p4h < e9 < e21:
+                trend_4h = "bearish"
+            if len(df_4h) >= 15:
+                swing = swing_points(df_4h, window=3)
+        elif len(df_1h) >= 15:
+            swing = swing_points(df_1h, window=5)
+
+        # HMM regime filter
+        regime = self._hmm.get_regime(df_1h) if len(df_1h) >= 30 else "trending"
+        if regime == "volatile":
+            return None
+
+        # 1H OBs — the target levels this sweep is testing
+        obs_1h = order_blocks(df_1h, lookback=20)
+        obs_1h = [ob for ob in obs_1h
+                  if abs(float(ob["open"]) - float(ob["close"])) >= atr_1h * 0.15]
+        if not obs_1h:
+            return None
+
+        # Proximity: OB must be reachable from this bar's wick
+        bull_obs = [ob for ob in obs_1h
+                    if ob["type"] == "bullish"
+                    and float(ob["open"]) >= bar_low * 0.98]
+        bear_obs = [ob for ob in obs_1h
+                    if ob["type"] == "bearish"
+                    and float(ob["open"]) <= bar_high * 1.02]
+
+        bull_bias = daily_trend != "bearish"
+        bear_bias = daily_trend != "bullish"
+
+        # ── Bullish velocity sweep ────────────────────────────────────────────
+        # Bar wicked into demand zone, recovered — close in upper 45% of range
+        if bull_bias and bull_obs and rsi_v < RSI_LONG_MAX and close_pct >= 0.45:
+            for ob in bull_obs:
+                ob_body_top = float(ob["open"])
+                ob_body_bot = float(ob["close"])
+                ob_low      = float(ob["low"])
+                if bar_low <= ob_body_top and bar_close >= ob_body_bot \
+                        and bar_low >= ob_low * 0.95:
+                    price = bar_close
+                    stop  = ob_low - atr_15m * 0.3
+                    stop  = min(stop, price - atr_15m * MIN_RISK_ATR)
+                    stop  = round(stop, 4)
+                    risk_ = price - stop
+                    if stop < price and risk_ >= price * 0.001:
+                        tp_mult, trail, scale_out = self._tp_from_confidence(
+                            "long", daily_trend, trend_4h, swing, price, regime
+                        )
+                        return {
+                            "direction":       "long",
+                            "signal_type":     "ob_sweep",
+                            "entry":           price,
+                            "stop":            stop,
+                            "atr":             atr_15m,
+                            "tp_mult":         tp_mult,
+                            "trail":           trail,
+                            "scale_out_trail": scale_out,
+                            "regime":          regime,
+                        }
+
+        # ── Bearish velocity sweep ────────────────────────────────────────────
+        # Bar wicked into supply zone, rejected — close in lower 55% of range
+        if bear_bias and bear_obs and rsi_v > RSI_SHORT_MIN and close_pct <= 0.55:
+            for ob in bear_obs:
+                ob_body_bot = float(ob["open"])
+                ob_body_top = float(ob["close"])
+                ob_high     = float(ob["high"])
+                if bar_high >= ob_body_bot and bar_close <= ob_body_top \
+                        and bar_high <= ob_high * 1.05:
+                    price = bar_close
+                    stop  = ob_high + atr_15m * 0.3
+                    stop  = max(stop, price + atr_15m * MIN_RISK_ATR)
+                    stop  = round(stop, 4)
+                    risk_ = stop - price
+                    if stop > price and risk_ >= price * 0.001:
+                        tp_mult, trail, scale_out = self._tp_from_confidence(
+                            "short", daily_trend, trend_4h, swing, price, regime
+                        )
+                        return {
+                            "direction":       "short",
+                            "signal_type":     "ob_sweep",
+                            "entry":           price,
+                            "stop":            stop,
+                            "atr":             atr_15m,
+                            "tp_mult":         tp_mult,
+                            "trail":           trail,
+                            "scale_out_trail": scale_out,
+                            "regime":          regime,
+                        }
+
+        return None
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _price_at_level(self, price: float, levels: dict, side: str,

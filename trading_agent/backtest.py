@@ -578,6 +578,152 @@ def plot_results(stats: dict, out_path: str = "backtest_results.png") -> str:
     return out_path
 
 
+# ── 15M OB sweep simulation ──────────────────────────────────────────────────
+
+def simulate_ob_sweeps_15m(symbol: str,
+                           df_15m: pd.DataFrame,
+                           df_1h: pd.DataFrame,
+                           df_daily: pd.DataFrame,
+                           df_4h: Optional[pd.DataFrame],
+                           strategy,
+                           account_value: float = 10_000,
+                           warmup_bars: int = 30) -> list[dict]:
+    """
+    15M-primary walk-forward simulation for OB sweep signals.
+
+    Entry fires at the NEXT 15M bar open (15 minutes after the sweep),
+    not the next 1H open (60 minutes later).  This is critical because
+    the institutional move following a stop-hunt sweep is typically
+    complete within 1-2 15M bars.
+    """
+    from .strategies.ny_open import _to_et, KILL_ZONE_START, KILL_ZONE_END, FORCE_CLOSE_HR
+
+    trades: list[Trade] = []
+    open_trade: Optional[Trade] = None
+    cooldown_until: int = 0
+    consecutive_losses: int = 0
+    circuit_breaker_until = None
+
+    def _ts(idx: int) -> str:
+        return str(df_15m.index[idx]) if idx < len(df_15m) else ""
+
+    for i in range(warmup_bars, len(df_15m) - 1):
+        bar_time = df_15m.index[i]
+        bar_et   = _to_et(bar_time)
+        t        = bar_et.time()
+
+        # Only inside kill zone
+        if not (KILL_ZONE_START <= t < KILL_ZONE_END):
+            continue
+
+        next_open = float(df_15m["Open"].iloc[i + 1])
+        next_high = float(df_15m["High"].iloc[i + 1])
+        next_low  = float(df_15m["Low"].iloc[i + 1])
+
+        # ── Manage open trade ────────────────────────────────────────────────
+        if open_trade is not None:
+            open_trade.exit_bar = i + 1
+            closed = _manage_trade(open_trade, next_high, next_low, next_open)
+            if closed:
+                closed.exit_time = _ts(i + 1)
+                trades.append(asdict(closed))
+                cooldown_until = i + 2   # 30-min cooldown
+                open_trade = None
+                last_pnl = trades[-1].get("pnl_r", 0) or 0
+                if last_pnl < 0:
+                    consecutive_losses += 1
+                    if consecutive_losses >= MAX_CONSEC_LOSSES:
+                        import datetime as _dt
+                        circuit_breaker_until = bar_et.date() + _dt.timedelta(days=1)
+                else:
+                    consecutive_losses = 0
+            else:
+                # Force close at kill zone end
+                next_et = _to_et(df_15m.index[i + 1])
+                if next_et.hour >= FORCE_CLOSE_HR:
+                    xp   = float(df_15m["Close"].iloc[i + 1])
+                    risk = open_trade.initial_risk or abs(open_trade.entry_price - open_trade.stop)
+                    mult = 1.0 if open_trade.direction == "long" else -1.0
+                    remaining_r = round((xp - open_trade.entry_price) * mult / risk, 2) if risk else 0
+                    open_trade.exit_price  = round(xp, 4)
+                    open_trade.exit_reason = "forced_close"
+                    open_trade.exit_bar    = i + 1
+                    open_trade.exit_time   = _ts(i + 1)
+                    open_trade.pnl_r       = (
+                        _blend(open_trade.partial_pnl_r, remaining_r)
+                        if open_trade.partial_exit_done else remaining_r
+                    )
+                    trades.append(asdict(open_trade))
+                    cooldown_until = i + 2
+                    open_trade = None
+            continue
+
+        if i < cooldown_until:
+            continue
+
+        # ── Circuit breaker ──────────────────────────────────────────────────
+        if circuit_breaker_until is not None:
+            if bar_et.date() < circuit_breaker_until:
+                continue
+            circuit_breaker_until = None
+            consecutive_losses    = 0
+
+        # ── Look for 15M velocity OB sweep ───────────────────────────────────
+        df_15m_slice = df_15m.iloc[:i + 1]
+        df_1h_slice  = df_1h[df_1h.index  <= bar_time]
+        df_4h_slice  = df_4h[df_4h.index  <= bar_time] if df_4h is not None else None
+        d_trend      = _daily_trend(df_daily, bar_time)
+
+        sig = strategy.generate_ob_sweep_signal(
+            df_15m_slice, df_1h_slice, d_trend, df_4h_slice
+        )
+        if sig is None:
+            continue
+
+        entry = next_open   # next 15M open — 15 minutes after sweep
+        stop  = sig["stop"]
+        risk  = abs(entry - stop)
+
+        if sig["direction"] == "long"  and stop >= entry:
+            continue
+        if sig["direction"] == "short" and stop <= entry:
+            continue
+        if risk < entry * 0.001:
+            continue
+
+        atr_val = sig.get("atr", risk)
+        if atr_val and risk < atr_val * 0.15:
+            continue
+
+        tp_mult = float(sig.get("tp_mult", 2.0))
+        tgts    = profit_targets(entry, stop, sig["direction"], atr_val, tp_mult=tp_mult)
+        pos     = position_size(account_value, entry, stop)
+
+        rr = abs(tgts["tp1"] - entry) / risk
+        if rr < 1.0:
+            continue
+
+        open_trade = Trade(
+            symbol          = symbol,
+            direction       = sig["direction"],
+            signal_type     = sig["signal_type"],
+            entry_bar       = i + 1,
+            entry_time      = _ts(i + 1),
+            entry_price     = round(entry, 4),
+            stop            = round(stop, 4),
+            tp1             = tgts["tp1"],
+            tp2             = tgts["tp2"],
+            shares          = pos["shares"],
+            regime          = sig.get("regime", "trending"),
+            atr             = atr_val,
+            initial_risk    = risk,
+            trail_to_tp2    = sig.get("trail", False),
+            scale_out_trail = sig.get("scale_out_trail", False),
+        )
+
+    return trades
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def run_backtest(symbols: list[str],
@@ -612,9 +758,20 @@ def run_backtest(symbols: list[str],
 
         df_15m = get_ohlcv(sym, "15m") if needs_multi_tf else None
         df_4h  = get_ohlcv(sym, "4h")  if needs_multi_tf else None
+
+        # 1H simulation (FVG fill + session levels)
         trades = simulate_symbol(sym, df_1h, df_daily, strategy,
                                  df_15m, df_4h, account_value)
-        print(f"  {sym}: {len(trades)} trades")
+
+        # 15M-primary OB sweep simulation (enters 15 min after sweep)
+        trades_ob: list[dict] = []
+        if needs_multi_tf and df_15m is not None and len(df_15m) > 30:
+            trades_ob = simulate_ob_sweeps_15m(
+                sym, df_15m, df_1h, df_daily, df_4h, strategy, account_value
+            )
+
+        print(f"  {sym}: {len(trades)} 1H trades + {len(trades_ob)} ob_sweep trades")
         all_trades.extend(trades)
+        all_trades.extend(trades_ob)
 
     return compute_stats(all_trades)
