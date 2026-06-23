@@ -444,7 +444,6 @@ class NYOpenStrategy(BaseStrategy):
 
         atr_series = calc_atr(df_15m)
         cmf_series = calc_cmf(df_15m, period=8)
-        vol_ma     = df_15m["Volume"].rolling(20).mean()
 
         # Proximity: anchor on the SCAN WINDOW's price range, not just the last bar.
         # A bar from 12 bars ago might have swept an OB even if current price has
@@ -483,23 +482,20 @@ class NYOpenStrategy(BaseStrategy):
             bar_high  = float(bar["High"])
             bar_close = float(bar["Close"])
             bar_open_ = float(bar["Open"])
-            bar_vol   = float(bar.get("Volume", 0))
 
             atr_15m = float(atr_series.iloc[idx])
             if pd.isna(atr_15m) or atr_15m == 0:
                 atr_15m = atr_1h * 0.25
 
-            # Volume confirmation: 1.1× average (elevated but not extreme)
-            vol_avg = float(vol_ma.iloc[idx]) if not pd.isna(vol_ma.iloc[idx]) else 0
-            if vol_avg > 0 and bar_vol < vol_avg * 1.1:
-                continue
-
             cmf_val = float(cmf_series.iloc[idx]) if not pd.isna(cmf_series.iloc[idx]) else 0.0
 
             # ── Bullish sweep ─────────────────────────────────────────────────
-            # Bullish OB = bearish candle: open > close, body top=open, bottom=close
-            if bull_bias and bull_obs and rsi_v < RSI_LONG_MAX \
-                    and bar_close > bar_open_ and cmf_val >= -0.05:
+            # Bullish OB = bearish candle: open > close, body top=open, bottom=close.
+            # NOTE: we do NOT require a green bar. An OB sweep is defined by the
+            # wick — price can open above the OB, dip into it (bar_low <= ob_body_top),
+            # then close anywhere above the body bottom. A red candle still shows
+            # demand absorbed at the OB level as long as close > body-bottom.
+            if bull_bias and bull_obs and rsi_v < RSI_LONG_MAX and cmf_val >= -0.10:
                 for ob in bull_obs:
                     ob_body_top = float(ob["open"])   # higher price = body top
                     ob_body_bot = float(ob["close"])  # lower price = body bottom
@@ -532,8 +528,9 @@ class NYOpenStrategy(BaseStrategy):
 
             # ── Bearish sweep ─────────────────────────────────────────────────
             # Bearish OB = bullish candle: close > open, body top=close, bottom=open
-            if bear_bias and bear_obs and rsi_v > RSI_SHORT_MIN \
-                    and bar_close < bar_open_ and cmf_val <= 0.05:
+            # Same principle: candle color is irrelevant; wick into supply + close
+            # below the body top is sufficient confirmation.
+            if bear_bias and bear_obs and rsi_v > RSI_SHORT_MIN and cmf_val <= 0.10:
                 for ob in bear_obs:
                     ob_body_bot = float(ob["open"])   # lower price = body bottom
                     ob_body_top = float(ob["close"])  # higher price = body top
