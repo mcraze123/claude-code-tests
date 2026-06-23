@@ -223,19 +223,19 @@ class NYOpenStrategy(BaseStrategy):
         bar_green = bar_close >= bar_open_
         bar_red   = bar_close < bar_open_
 
-        # ── OB Sweep on 15M — first priority on confirmed-trend days ─────────
-        # 1H OBs as target levels; 15M bars for sweep detection.
-        # Checked before fvg_fill so that on trending days the higher-quality
-        # OB setup takes precedence over the session-level FVG fill.
-        if df_15m is not None and len(df_15m) >= 20:
-            df_15m_local = df_15m[df_15m.index <= df_slice.index[-1]].tail(24)
-            if len(df_15m_local) >= 12:
-                ob_sig = self._check_ob_sweep_15m(
-                    df_15m_local, df_slice,
-                    atr_v, rsi_v, daily_trend, trend_4h, swing
-                )
-                if ob_sig:
-                    return ob_sig
+        # ── OB Sweep on 15M — disabled pending entry redesign ─────────────────
+        # The 15M scan detects sweeps that may be hours old; the backtest enters
+        # at next 1H open which is then far from the OB zone → bad RR.
+        # Disabled until entry is anchored to OB zone mid rather than bar_close.
+        # if df_15m is not None and len(df_15m) >= 20:
+        #     df_15m_local = df_15m[df_15m.index <= df_slice.index[-1]].tail(24)
+        #     if len(df_15m_local) >= 12:
+        #         ob_sig = self._check_ob_sweep_15m(
+        #             df_15m_local, df_slice,
+        #             atr_v, rsi_v, daily_trend, trend_4h, swing
+        #         )
+        #         if ob_sig:
+        #             return ob_sig
 
         # ── Bullish FVG fill — session level sweep + FVG confirmation ────────
         # Fires on confirmed bullish AND neutral-trend days (where OB sweep
