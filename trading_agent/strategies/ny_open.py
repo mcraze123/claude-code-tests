@@ -438,7 +438,7 @@ class NYOpenStrategy(BaseStrategy):
         """
         obs_1h = order_blocks(df_1h, lookback=20)
         obs_1h = [ob for ob in obs_1h
-                  if abs(float(ob["open"]) - float(ob["close"])) >= atr_1h * 0.20]
+                  if abs(float(ob["open"]) - float(ob["close"])) >= atr_1h * 0.15]
         if not obs_1h:
             return None
 
@@ -449,9 +449,9 @@ class NYOpenStrategy(BaseStrategy):
         # A bar from 12 bars ago might have swept an OB even if current price has
         # moved away — so the correct filter is "could any bar in the scan window
         # have reached this OB zone?".
-        n_scan    = min(16, len(df_15m))
-        scan_low  = float(df_15m["Low"].iloc[-n_scan:].min())
-        scan_high = float(df_15m["High"].iloc[-n_scan:].max())
+        n_scan    = len(df_15m)   # scan all available 15M bars (up to 24)
+        scan_low  = float(df_15m["Low"].min())
+        scan_high = float(df_15m["High"].max())
 
         # Pre-filter by proximity so the inner loop is cheap.
         # Bullish OB reachable: body top (ob_open, the higher price) must be at
@@ -468,14 +468,14 @@ class NYOpenStrategy(BaseStrategy):
         if not bull_obs and not bear_obs:
             return None
 
-        # Directional bias: confirmed daily OR neutral daily with 4H backing
-        bull_bias = (daily_trend == "bullish") or \
-                    (daily_trend == "neutral" and trend_4h == "bullish")
-        bear_bias = (daily_trend == "bearish") or \
-                    (daily_trend == "neutral" and trend_4h == "bearish")
+        # Directional bias: any non-opposing daily trend qualifies.
+        # OBs themselves provide the directional signal; a neutral daily trend
+        # is fine — the 1H OB zone IS the bias.  Only skip if daily opposes.
+        bull_bias = daily_trend != "bearish"
+        bear_bias = daily_trend != "bullish"
 
-        # Scan last 16 15M bars in reverse — most recent qualifying sweep wins
-        scan_start = max(0, len(df_15m) - 16)
+        # Scan all available 15M bars in reverse — most recent qualifying sweep wins
+        scan_start = 0
         for idx in range(len(df_15m) - 1, scan_start - 1, -1):
             bar       = df_15m.iloc[idx]
             bar_low   = float(bar["Low"])
@@ -503,7 +503,7 @@ class NYOpenStrategy(BaseStrategy):
                     # Bar entered OB zone (wicked to body top or below)
                     # and closed above body bottom — demand absorbed the sweep
                     if bar_low <= ob_body_top and bar_close >= ob_body_bot \
-                            and bar_low >= ob_low * 0.97:
+                            and bar_low >= ob_low * 0.95:
                         price = bar_close
                         stop  = ob_low - atr_15m * 0.3
                         stop  = min(stop, price - atr_1h * MIN_RISK_ATR)
@@ -538,7 +538,7 @@ class NYOpenStrategy(BaseStrategy):
                     # Bar entered OB zone (wicked to body bottom or above)
                     # and closed below body top — supply absorbed the sweep
                     if bar_high >= ob_body_bot and bar_close <= ob_body_top \
-                            and bar_high <= ob_high * 1.03:
+                            and bar_high <= ob_high * 1.05:
                         price = bar_close
                         stop  = ob_high + atr_15m * 0.3
                         stop  = max(stop, price + atr_1h * MIN_RISK_ATR)
