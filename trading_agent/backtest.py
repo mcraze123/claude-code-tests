@@ -672,9 +672,12 @@ def simulate_ob_sweeps_15m(symbol: str,
             consecutive_losses    = 0
 
         # ── Look for 15M velocity OB sweep ───────────────────────────────────
-        df_15m_slice = df_15m.iloc[:i + 1]
-        df_1h_slice  = df_1h[df_1h.index  <= bar_time]
-        df_4h_slice  = df_4h[df_4h.index  <= bar_time] if df_4h is not None else None
+        # Truncate to a fixed lookback window so rolling ATR/RSI/EMA calculations
+        # are O(1) per bar rather than O(n), preventing quadratic slowdown on 60d data.
+        df_15m_slice = df_15m.iloc[max(0, i - 100): i + 1]
+        df_1h_slice  = df_1h[df_1h.index  <= bar_time].iloc[-80:]
+        df_4h_slice  = (df_4h[df_4h.index <= bar_time].iloc[-40:]
+                        if df_4h is not None else None)
         d_trend      = _daily_trend(df_daily, bar_time)
 
         sig = strategy.generate_ob_sweep_signal(

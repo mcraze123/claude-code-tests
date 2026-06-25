@@ -49,8 +49,11 @@ class HMMRegimeFilter:
             n_iter=100,
             random_state=42,
         )
+        import warnings
         try:
-            model.fit(X)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model.fit(X)
         except Exception:
             return
 
