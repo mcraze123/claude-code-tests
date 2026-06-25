@@ -308,7 +308,8 @@ class NYOpenStrategy(BaseStrategy):
     def generate_ob_sweep_signal(self, df_15m: pd.DataFrame,
                                   df_1h: pd.DataFrame,
                                   daily_trend: str,
-                                  df_4h: Optional[pd.DataFrame] = None) -> Optional[dict]:
+                                  df_4h: Optional[pd.DataFrame] = None,
+                                  _diag: Optional[dict] = None) -> Optional[dict]:
         """
         Swing-level liquidity sweep on 15M bars.
 
@@ -321,20 +322,23 @@ class NYOpenStrategy(BaseStrategy):
         Entry conditions:
           1. bar_low < recent swing low AND bar_close > swing low   (bull sweep)
              bar_high > recent swing high AND bar_close < swing high (bear sweep)
-          2. Bar range >= 1.3×ATR  — velocity (institutional speed)
-          3. Bar volume >= 1.5×20-bar avg — elevated volume confirms participation
-          4. Close in upper 45%+ of range for longs (lower 55%- for shorts)
-             — shows recovery / rejection after the wick
-          5. Trend must not oppose: bullish/neutral daily for longs,
-             bearish/neutral daily for shorts
+          2. Bar range >= 1.1×ATR  — above-average velocity
+          3. Bar volume >= 1.2×20-bar avg — elevated volume
+          4. Close in upper 40%+ of range for longs (lower 60%- for shorts)
+          5. Daily trend not opposing direction
         """
-        if len(df_15m) < 25 or len(df_1h) < 20:
+        def _reject(reason: str) -> None:
+            if _diag is not None:
+                _diag[reason] = _diag.get(reason, 0) + 1
             return None
+
+        if len(df_15m) < 25 or len(df_1h) < 20:
+            return _reject("data_short")
 
         bar_et = _to_et(df_15m.index[-1])
         t = bar_et.time()
         if not (KILL_ZONE_START <= t < KILL_ZONE_END):
-            return None
+            return _reject("outside_kz")
 
         bar      = df_15m.iloc[-1]
         bar_low   = float(bar["Low"])
@@ -349,31 +353,31 @@ class NYOpenStrategy(BaseStrategy):
         if pd.isna(atr_15m) or atr_15m == 0:
             atr_15m = bar_range if bar_range > 0 else 0.01
 
-        if bar_range < atr_15m * 1.3:
-            return None
+        if bar_range < atr_15m * 1.1:
+            return _reject("velocity")
 
         # ── Volume gate ───────────────────────────────────────────────────────
         vol_ma = df_15m["Volume"].rolling(20).mean().iloc[-1]
-        if not pd.isna(vol_ma) and vol_ma > 0 and bar_vol < vol_ma * 1.5:
-            return None
+        if not pd.isna(vol_ma) and vol_ma > 0 and bar_vol < vol_ma * 1.2:
+            return _reject("volume")
 
         # Recovery: where did bar close within its range?
         close_pct = (bar_close - bar_low) / bar_range if bar_range > 0 else 0.5
 
         # ── Swing levels ──────────────────────────────────────────────────────
-        # Look at the last 40 15M bars (10 hours) excluding the current bar to
-        # find the most recent confirmed swing low/high — these are the liquidity
-        # pools being targeted.
-        sp_data   = df_15m.tail(40).iloc[:-1]
-        sp        = swing_points(sp_data, window=3)
+        # Use last 20 bars (5 hours) with window=2 to find more recent pivots.
+        # A tighter window means the swing level is more actionable as a target.
+        sp_data    = df_15m.tail(20).iloc[:-1]   # 19 bars before current
+        sp         = swing_points(sp_data, window=2)
         swing_low  = sp.get("last_low")
         swing_high = sp.get("last_high")
 
-        # Fallback: simple range if no confirmed pivots yet
+        # Fallback: use 2-hour range (8 bars) — NOT the 20-bar absolute minimum
+        # which would require making an all-time 20-bar low, far too strict.
         if swing_low is None:
-            swing_low = float(df_15m["Low"].iloc[-21:-1].min())
+            swing_low  = float(df_15m["Low"].iloc[-9:-1].min())
         if swing_high is None:
-            swing_high = float(df_15m["High"].iloc[-21:-1].max())
+            swing_high = float(df_15m["High"].iloc[-9:-1].max())
 
         # ── 1H / 4H context ───────────────────────────────────────────────────
         rsi_v  = float(calc_rsi(df_1h).iloc[-1]) if len(df_1h) >= 14 else 50.0
@@ -396,17 +400,16 @@ class NYOpenStrategy(BaseStrategy):
 
         regime = self._hmm.get_regime(df_1h) if len(df_1h) >= 30 else "trending"
         if regime == "volatile":
-            return None
+            return _reject("volatile_regime")
 
         # ── Bullish swing sweep ───────────────────────────────────────────────
-        # Price wicked BELOW the prior swing low (stops triggered) then
-        # closed BACK ABOVE it (smart money absorbed, reversal beginning).
-        bull_bias = (daily_trend == "bullish") or \
-                    (daily_trend == "neutral" and trend_4h == "bullish")
-        if bull_bias and rsi_v < RSI_LONG_MAX and close_pct >= 0.45:
+        # Trend filter: any day that isn't actively bearish is OK.
+        # Previous version required bullish OR (neutral+4H bullish) — too strict.
+        bull_bias = daily_trend != "bearish"
+        if bull_bias and rsi_v < RSI_LONG_MAX and close_pct >= 0.40:
             if bar_low < swing_low and bar_close > swing_low:
                 price = bar_close
-                stop  = bar_low - atr_15m * 0.3   # stop below the sweep wick
+                stop  = bar_low - atr_15m * 0.3
                 stop  = min(stop, price - atr_15m * MIN_RISK_ATR)
                 stop  = round(stop, 4)
                 risk_ = price - stop
@@ -427,14 +430,11 @@ class NYOpenStrategy(BaseStrategy):
                     }
 
         # ── Bearish swing sweep ───────────────────────────────────────────────
-        # Price wicked ABOVE the prior swing high (stops triggered) then
-        # closed BACK BELOW it (smart money distributed, reversal beginning).
-        bear_bias = (daily_trend == "bearish") or \
-                    (daily_trend == "neutral" and trend_4h == "bearish")
-        if bear_bias and rsi_v > RSI_SHORT_MIN and close_pct <= 0.55:
+        bear_bias = daily_trend != "bullish"
+        if bear_bias and rsi_v > RSI_SHORT_MIN and close_pct <= 0.60:
             if bar_high > swing_high and bar_close < swing_high:
                 price = bar_close
-                stop  = bar_high + atr_15m * 0.3   # stop above the sweep wick
+                stop  = bar_high + atr_15m * 0.3
                 stop  = max(stop, price + atr_15m * MIN_RISK_ATR)
                 stop  = round(stop, 4)
                 risk_ = stop - price
@@ -454,7 +454,7 @@ class NYOpenStrategy(BaseStrategy):
                         "regime":          regime,
                     }
 
-        return None
+        return _reject("no_sweep")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

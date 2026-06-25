@@ -603,6 +603,8 @@ def simulate_ob_sweeps_15m(symbol: str,
     cooldown_until: int = 0
     consecutive_losses: int = 0
     circuit_breaker_until = None
+    _diag: dict = {}
+    _kz_bars = 0
 
     def _ts(idx: int) -> str:
         return str(df_15m.index[idx]) if idx < len(df_15m) else ""
@@ -616,6 +618,7 @@ def simulate_ob_sweeps_15m(symbol: str,
         if not (KILL_ZONE_START <= t < KILL_ZONE_END):
             continue
 
+        _kz_bars += 1
         next_open = float(df_15m["Open"].iloc[i + 1])
         next_high = float(df_15m["High"].iloc[i + 1])
         next_low  = float(df_15m["Low"].iloc[i + 1])
@@ -675,7 +678,7 @@ def simulate_ob_sweeps_15m(symbol: str,
         d_trend      = _daily_trend(df_daily, bar_time)
 
         sig = strategy.generate_ob_sweep_signal(
-            df_15m_slice, df_1h_slice, d_trend, df_4h_slice
+            df_15m_slice, df_1h_slice, d_trend, df_4h_slice, _diag=_diag
         )
         if sig is None:
             continue
@@ -721,6 +724,9 @@ def simulate_ob_sweeps_15m(symbol: str,
             scale_out_trail = sig.get("scale_out_trail", False),
         )
 
+    top_rejects = sorted(_diag.items(), key=lambda x: -x[1])[:5]
+    print(f"    ob_sweep diag ({symbol}): {_kz_bars} kz bars | "
+          f"{len(trades)} trades | filters: {dict(top_rejects)}", flush=True)
     return trades
 
 
