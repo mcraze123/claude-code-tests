@@ -30,7 +30,7 @@ TIMEFRAME_PARAMS = {
     "daily": {"period": "90d", "interval": "1d"},
     "4h":    {"period": "30d", "interval": "1h"},   # resampled from 1h
     "1h":    {"period": "60d", "interval": "1h"},
-    "15m":   {"period": "5d",  "interval": "15m"},
+    "15m":   {"period": "60d", "interval": "15m"},
 }
 
 # Tickers to always include in screen even if not top-movers

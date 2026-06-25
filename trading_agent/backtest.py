@@ -765,6 +765,10 @@ def run_backtest(symbols: list[str],
         df_15m = get_ohlcv(sym, "15m") if needs_multi_tf else None
         df_4h  = get_ohlcv(sym, "4h")  if needs_multi_tf else None
 
+        if needs_multi_tf:
+            n15 = len(df_15m) if df_15m is not None else 0
+            print(f"  {sym}: df_15m={n15} bars loaded", flush=True)
+
         # 1H simulation (FVG fill + session levels)
         trades = simulate_symbol(sym, df_1h, df_daily, strategy,
                                  df_15m, df_4h, account_value)
