@@ -1,0 +1,46 @@
+{% macro item_table(items, show_auction_cols) %}
+<table class="item-table">
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>Price</th>
+            <th>% of Avg</th>
+            <th>% of Median</th>
+            <th>Comp Avg / Median</th>
+            {% if show_auction_cols %}
+            <th>Bids</th>
+            <th>Watchers</th>
+            <th>Ends</th>
+            {% endif %}
+            <th>Condition</th>
+            <th>Listed</th>
+            <th>Description</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in items %}
+        <tr>
+            <td><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a></td>
+            <td>${{ "%.2f"|format(item.current_price) if item.current_price is not none else "?" }}</td>
+            <td>{{ (item.ratio_to_avg * 100)|round(1) if item.ratio_to_avg is not none else "-" }}%</td>
+            <td>{{ (item.ratio_to_median * 100)|round(1) if item.ratio_to_median is not none else "-" }}%</td>
+            <td>${{ item.comp_avg_price }} / ${{ item.comp_median_price }}</td>
+            {% if show_auction_cols %}
+            <td>{{ item.bid_count if item.bid_count is not none else "-" }}</td>
+            <td>{{ item.watcher_count if item.watcher_count is not none else "-" }}</td>
+            <td>{{ item.end_time.strftime("%m/%d %H:%M") if item.end_time else "-" }} UTC</td>
+            {% endif %}
+            <td>{{ item.condition or "-" }}</td>
+            <td>{{ item.listed_at.strftime("%Y-%m-%d") if item.listed_at else "unknown" }}</td>
+            <td class="desc">{{ (item.description_snippet or "")[:140] }}</td>
+            <td>
+                <form method="post" action="/items/{{ item.id }}/ignore" onsubmit="return confirm('Hide this item?');">
+                    <button type="submit" class="btn-small">Hide</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endmacro %}

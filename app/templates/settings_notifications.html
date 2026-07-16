@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Notifications & Schedule - eBay Deal Finder{% endblock %}
+{% block content %}
+<h1>Notifications &amp; Schedule</h1>
+
+<form method="post" action="/settings/notifications" class="form-grid">
+    <h2>Daily Email Digest</h2>
+    <label>Recipient email <input type="email" name="recipient_email" value="{{ ns.recipient_email or '' }}"></label>
+    <label class="checkbox"><input type="checkbox" name="daily_digest_enabled" {% if ns.daily_digest_enabled %}checked{% endif %}> Enabled</label>
+    <label>Send time (24h, app timezone) <input type="time" name="daily_digest_time" value="{{ ns.daily_digest_time }}"></label>
+    <label>Ending-soon lookahead (hours) <input type="number" name="ending_soon_lookahead_hours" value="{{ ns.ending_soon_lookahead_hours }}"></label>
+    <label>Default deal threshold (% of avg/median or below) <input type="number" step="1" name="default_deal_threshold_pct" value="{{ ns.default_deal_threshold_pct }}"></label>
+
+    <h2>Search Schedule</h2>
+    <label>Run all searches every (minutes) <input type="number" name="search_interval_minutes" value="{{ schedule.search_interval_minutes }}"></label>
+    <label>Refresh ending-soon auctions every (minutes) <input type="number" name="ending_soon_refresh_minutes" value="{{ schedule.ending_soon_refresh_minutes }}"></label>
+    <label>Prune ended items after (days) <input type="number" name="prune_after_days" value="{{ schedule.prune_after_days }}"></label>
+
+    <button type="submit">Save</button>
+</form>
+<p class="muted">SMTP server credentials are configured via the .env file on the host, not here (keeps secrets out of the database/UI).</p>
+{% endblock %}

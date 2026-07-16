@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Dashboard - eBay Deal Finder{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<p class="muted">Items at or below the deal threshold vs. their comp price. Refreshed automatically on schedule (see Notifications &amp; Schedule).</p>
+
+<div class="tabs">
+    <button class="tab-btn active" onclick="showTab('bin')">Buy It Now Deals</button>
+    <button class="tab-btn" onclick="showTab('ending')">Ending Soon Auctions</button>
+</div>
+
+<section id="tab-bin" class="tab-panel">
+    {% if not buy_it_now_tables %}
+        <p class="muted">No buy-it-now deals found yet.</p>
+    {% endif %}
+    {% for group in buy_it_now_tables %}
+        <h2>{{ group.search.name }} <span class="count">({{ group.listings|length }})</span></h2>
+        {{ macros.item_table(group.listings, false) }}
+    {% endfor %}
+</section>
+
+<section id="tab-ending" class="tab-panel" style="display:none">
+    {% if not ending_soon_tables %}
+        <p class="muted">No ending-soon auction deals found yet.</p>
+    {% endif %}
+    {% for group in ending_soon_tables %}
+        <h2>{{ group.search.name }} <span class="count">({{ group.listings|length }})</span></h2>
+        {{ macros.item_table(group.listings, true) }}
+    {% endfor %}
+</section>
+
+<script src="/static/app.js"></script>
+{% endblock %}

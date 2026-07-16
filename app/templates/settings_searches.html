@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Searches - eBay Deal Finder{% endblock %}
+{% block content %}
+<h1>Searches</h1>
+<p class="muted">Each search is its own table on the dashboard. Query text uses eBay Browse API syntax: quotes for
+    exact phrase, <code>-word</code> to exclude. Add multiple query rows per search to emulate OR-grouping
+    (each runs as its own API call, results merge into one table).</p>
+
+<details class="new-search">
+    <summary>+ Add new search</summary>
+    <form method="post" action="/settings/searches" class="form-grid">
+        <label>Name <input type="text" name="name" required></label>
+        <label>First query <input type="text" name="query_text" required placeholder='e.g. synology nas "not working"'></label>
+        <label>Category IDs (optional, comma-separated) <input type="text" name="category_ids"></label>
+        <label>Condition IDs (optional, comma-separated) <input type="text" name="condition_ids"></label>
+        <label>Min price <input type="number" step="0.01" name="min_price"></label>
+        <label>Max price <input type="number" step="0.01" name="max_price"></label>
+        <label>Deal threshold % (blank = global default) <input type="number" step="1" name="deal_threshold_pct"></label>
+        <button type="submit">Create search</button>
+    </form>
+</details>
+
+{% for search in searches %}
+<section class="search-card">
+    <h2>{{ search.name }} {% if not search.enabled %}<span class="badge-off">disabled</span>{% endif %}</h2>
+
+    <form method="post" action="/settings/searches/{{ search.id }}/update" class="form-grid">
+        <label>Name <input type="text" name="name" value="{{ search.name }}" required></label>
+        <label>Category IDs <input type="text" name="category_ids" value="{{ search.category_ids or '' }}"></label>
+        <label>Condition IDs <input type="text" name="condition_ids" value="{{ search.condition_ids or '' }}"></label>
+        <label>Min price <input type="number" step="0.01" name="min_price" value="{{ search.min_price or '' }}"></label>
+        <label>Max price <input type="number" step="0.01" name="max_price" value="{{ search.max_price or '' }}"></label>
+        <label>Deal threshold % <input type="number" step="1" name="deal_threshold_pct" value="{{ search.deal_threshold_pct or '' }}"></label>
+        <label class="checkbox"><input type="checkbox" name="enabled" {% if search.enabled %}checked{% endif %}> Enabled</label>
+        <button type="submit">Save</button>
+    </form>
+    <form method="post" action="/searches/{{ search.id }}/run_now" style="display:inline">
+        <button type="submit" class="btn-small">Run now</button>
+    </form>
+    <form method="post" action="/settings/searches/{{ search.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this search and all its items/comps?');">
+        <button type="submit" class="btn-small btn-danger">Delete search</button>
+    </form>
+
+    <h3>Query variants</h3>
+    <ul class="variant-list">
+        {% for v in search.variants %}
+        <li>
+            <code>{{ v.query_text }}</code>
+            <form method="post" action="/settings/searches/{{ search.id }}/variants/{{ v.id }}/delete" style="display:inline">
+                <button type="submit" class="btn-tiny">x</button>
+            </form>
+        </li>
+        {% endfor %}
+    </ul>
+    <form method="post" action="/settings/searches/{{ search.id }}/variants" class="inline-form">
+        <input type="text" name="query_text" placeholder="new query variant" required>
+        <button type="submit" class="btn-small">Add variant</button>
+    </form>
+
+    <h3>Comp prices (reference sold prices for matching)</h3>
+    <table class="comp-table">
+        <thead>
+            <tr><th>Model</th><th>Match keywords</th><th>Avg</th><th>Median</th><th>Samples</th><th>Notes</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for comp in search.comps %}
+            <tr>
+                <td>{{ comp.model_name }}</td>
+                <td><code>{{ comp.match_keywords }}</code></td>
+                <td>{{ ("$%.2f"|format(comp.avg_price)) if comp.avg_price is not none else "-" }}</td>
+                <td>{{ ("$%.2f"|format(comp.median_price)) if comp.median_price is not none else "-" }}</td>
+                <td>{{ comp.sample_count }}</td>
+                <td>{{ comp.notes or "" }}</td>
+                <td class="comp-actions">
+                    <form method="post" action="/settings/searches/{{ search.id }}/comps/{{ comp.id }}/fetch_asking">
+                        <button type="submit" class="btn-tiny" title="Pre-fill from current asking prices (NOT sold prices)">Pre-fill</button>
+                    </form>
+                    <form method="post" action="/settings/searches/{{ search.id }}/comps/{{ comp.id }}/delete" onsubmit="return confirm('Delete this comp entry?');">
+                        <button type="submit" class="btn-tiny btn-danger">Delete</button>
+                    </form>
+                    <details>
+                        <summary>Samples ({{ comp.samples|length }})</summary>
+                        <ul>
+                        {% for s in comp.samples %}
+                            <li>${{ "%.2f"|format(s.price) }} - {{ s.source }}{% if s.note %} ({{ s.note }}){% endif %}
+                                <form method="post" action="/settings/searches/{{ search.id }}/comps/{{ comp.id }}/samples/{{ s.id }}/delete" style="display:inline">
+                                    <button type="submit" class="btn-tiny">x</button>
+                                </form>
+                            </li>
+                        {% endfor %}
+                        </ul>
+                        <form method="post" action="/settings/searches/{{ search.id }}/comps/{{ comp.id }}/samples" class="inline-form">
+                            <input type="number" step="0.01" name="price" placeholder="price" required style="width:90px">
+                            <select name="source">
+                                <option value="manual_sold">confirmed sold</option>
+                                <option value="fetched_asking">asking price</option>
+                            </select>
+                            <input type="text" name="note" placeholder="note (optional)">
+                            <button type="submit" class="btn-tiny">Add sample</button>
+                        </form>
+                    </details>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <form method="post" action="/settings/searches/{{ search.id }}/comps" class="form-grid">
+        <label>Model name <input type="text" name="model_name" required placeholder="e.g. Alienware x17 R2"></label>
+        <label>Match keywords (comma-separated, all must appear in title) <input type="text" name="match_keywords" required placeholder="x17, r2"></label>
+        <label>Notes <input type="text" name="notes"></label>
+        <button type="submit" class="btn-small">Add comp entry</button>
+    </form>
+</section>
+{% endfor %}
+{% endblock %}

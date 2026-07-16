@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}eBay Deal Finder{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="topnav">
+        <a href="/" class="brand">eBay Deal Finder</a>
+        <a href="/">Dashboard</a>
+        <a href="/settings/searches">Searches</a>
+        <a href="/settings/notifications">Notifications &amp; Schedule</a>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

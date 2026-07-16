@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: Arial, sans-serif; color: #222;">
+<h1 style="font-size:20px;">eBay Deal Finder - Daily Digest</h1>
+
+<h2 style="font-size:16px;">Buy It Now Deals</h2>
+{% if not buy_it_now_groups %}
+<p>No buy-it-now deals right now.</p>
+{% endif %}
+{% for search_name, items in buy_it_now_groups %}
+<h3 style="font-size:14px; margin-bottom:4px;">{{ search_name }}</h3>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; margin-bottom:16px; font-size:13px;">
+<tr style="background:#eee;">
+    <th align="left">Title</th><th>Price</th><th>Avg</th><th>Median</th><th>Condition</th><th>Listed</th>
+</tr>
+{% for item in items %}
+<tr>
+    <td><a href="{{ item.url }}">{{ item.title }}</a></td>
+    <td>${{ "%.2f"|format(item.current_price) if item.current_price is not none else "?" }}</td>
+    <td>${{ item.comp_avg_price }}</td>
+    <td>${{ item.comp_median_price }}</td>
+    <td>{{ item.condition or "-" }}</td>
+    <td>{{ item.listed_at.strftime("%Y-%m-%d") if item.listed_at else "unknown" }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endfor %}
+
+<h2 style="font-size:16px;">Auctions Ending Soon (next {{ lookahead_hours }}h)</h2>
+{% if not ending_soon_groups %}
+<p>No ending-soon deals right now.</p>
+{% endif %}
+{% for search_name, items in ending_soon_groups %}
+<h3 style="font-size:14px; margin-bottom:4px;">{{ search_name }}</h3>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; margin-bottom:16px; font-size:13px;">
+<tr style="background:#eee;">
+    <th align="left">Title</th><th>Price</th><th>Avg</th><th>Median</th><th>Bids</th><th>Watchers</th><th>Ends (UTC)</th>
+</tr>
+{% for item in items %}
+<tr>
+    <td><a href="{{ item.url }}">{{ item.title }}</a></td>
+    <td>${{ "%.2f"|format(item.current_price) if item.current_price is not none else "?" }}</td>
+    <td>${{ item.comp_avg_price }}</td>
+    <td>${{ item.comp_median_price }}</td>
+    <td>{{ item.bid_count if item.bid_count is not none else "-" }}</td>
+    <td>{{ item.watcher_count if item.watcher_count is not none else "-" }}</td>
+    <td>{{ item.end_time.strftime("%m/%d %H:%M") if item.end_time else "-" }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endfor %}
+</body>
+</html>
