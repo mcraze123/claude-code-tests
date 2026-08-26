@@ -29,6 +29,11 @@ import urllib.request
 import urllib.robotparser
 from html.parser import HTMLParser
 
+try:
+    import gdrive
+except ImportError:  # gdrive.py missing -> Drive links are skipped
+    gdrive = None
+
 DEFAULT_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -45,7 +50,13 @@ EXTENSION_GROUPS = {
     "archive": ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"],
     "audio": ["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma"],
     "video": ["mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v", "3gp"],
-    "data": ["json", "xml", "sql", "bin", "hex", "iso", "img", "sch", "brd", "dsn"],
+    "data": ["json", "xml", "sql", "bin", "hex", "iso", "img"],
+    # Schematic / PCB / CAD formats -- what schematic blogs actually host.
+    "eda": [
+        "brd", "sch", "dsn", "fz", "fzz", "cad", "pcb", "kicad_pcb", "kicad_sch",
+        "lay", "lay6", "dwg", "dxf", "step", "stp", "iges", "igs", "asc", "bdv",
+        "bv", "bvr", "cst", "tvw", "fbd", "ddb", "pdsprj", "pcbdoc", "schdoc",
+    ],
 }
 
 # HTML attributes that can carry a URL, per tag.
@@ -165,6 +176,11 @@ class Scraper:
         self.results: list[dict] = []
         self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
         self._last_request = 0.0
+        self.use_drive = bool(args.follow_drive and gdrive is not None)
+        self.drive = (
+            gdrive.DriveClient(args.user_agent, args.timeout, args.drive_folder_depth)
+            if self.use_drive else None
+        )
 
     # -- setup ------------------------------------------------------------
     def _resolve_extensions(self) -> set[str] | None:
@@ -264,13 +280,14 @@ class Scraper:
             print(f"[page] failed {url}: {exc}", file=sys.stderr)
             return None
 
-    def collect(self, html_text: str, base_url: str) -> tuple[list[str], list[str]]:
-        """Return (file urls, page urls) discovered on the page."""
+    def collect(self, html_text: str, base_url: str) -> tuple[list[str], list[str], list[str]]:
+        """Return (file urls, page urls, drive urls) discovered on the page."""
         parser = LinkParser()
         parser.feed(html_text)
 
         files: list[str] = []
         pages: list[str] = []
+        drive: list[str] = []
         base_host = urllib.parse.urlsplit(base_url).netloc.lower()
 
         for tag, raw in parser.found:
@@ -281,6 +298,12 @@ class Scraper:
                 url = upgrade_blogger_image(url)
             ext = url_extension(url)
             embedded = tag in ("img", "source", "video", "audio", "embed", "object")
+
+            # A Drive link is a page that stands in for a file -- resolve it later
+            # rather than downloading the HTML wrapper.
+            if self.use_drive and gdrive.is_drive_url(url):
+                drive.append(url)
+                continue
 
             if self.extensions is None:
                 # --all: everything that isn't an obvious page link
@@ -296,7 +319,7 @@ class Scraper:
                 if urllib.parse.urlsplit(url).netloc.lower() == base_host:
                     pages.append(url)
 
-        return files, pages
+        return files, pages, drive
 
     # -- downloading ------------------------------------------------------
     def _reserve_name(self, name: str) -> str:
@@ -332,46 +355,108 @@ class Scraper:
         with response:
             content_type = response.headers.get("Content-Type")
             record["content_type"] = content_type
-            length = response.headers.get("Content-Length")
-            if length and self.args.max_bytes and int(length) > self.args.max_bytes:
-                record.update(status="too-large", bytes=int(length))
-                return record
+            name = filename_for(response.geturl(), content_type)
+            return self._write(response, name, record)
 
-            name = self._reserve_name(filename_for(response.geturl(), content_type))
-            target = os.path.join(self.out_dir, name)
+    def download_drive(self, target) -> dict:
+        """Resolve one Drive file to its real bytes and save it."""
+        record = {"url": target.url, "status": "ok", "path": None, "bytes": 0,
+                  "content_type": None, "drive_id": target.file_id}
+        try:
+            def action():
+                self._throttle()
+                return self.drive.open_download(target)
 
-            if self.args.skip_existing and os.path.exists(target) and os.path.getsize(target) > 0:
-                record.update(status="skipped-existing", path=target,
-                              bytes=os.path.getsize(target))
-                return record
-
-            total = 0
-            partial = target + ".part"
-            try:
-                with open(partial, "wb") as handle:
-                    while True:
-                        chunk = response.read(65536)
-                        if not chunk:
-                            break
-                        total += len(chunk)
-                        if self.args.max_bytes and total > self.args.max_bytes:
-                            raise ValueError(f"exceeds --max-bytes ({self.args.max_bytes})")
-                        handle.write(chunk)
-                os.replace(partial, target)
-            except Exception as exc:
-                if os.path.exists(partial):
-                    os.remove(partial)
-                record.update(status="error", error=str(exc))
-                return record
-
-            record.update(path=target, bytes=total)
+            response, suggested = self._with_retries(target.url, action)
+        except gdrive.DriveError as exc:
+            record.update(status="unavailable", error=str(exc))
             return record
+        except Exception as exc:
+            record.update(status="error", error=str(exc))
+            return record
+
+        with response:
+            record["content_type"] = response.headers.get("Content-Type")
+            name = filename_for("http://x/" + suggested.lstrip("/"), record["content_type"])
+            # The real type is only known now, so apply --types here.
+            extension = os.path.splitext(name)[1].lstrip(".").lower()
+            if self.extensions is not None and extension and extension not in self.extensions:
+                record.update(status="filtered", path=name)
+                return record
+            return self._write(response, name, record)
+
+    def _write(self, response, name: str, record: dict) -> dict:
+        """Stream a response to disk atomically. Shared by both download paths."""
+        length = response.headers.get("Content-Length")
+        if length and self.args.max_bytes and int(length) > self.args.max_bytes:
+            record.update(status="too-large", bytes=int(length))
+            return record
+
+        name = self._reserve_name(name)
+        target = os.path.join(self.out_dir, name)
+
+        if self.args.skip_existing and os.path.exists(target) and os.path.getsize(target) > 0:
+            record.update(status="skipped-existing", path=target,
+                          bytes=os.path.getsize(target))
+            return record
+
+        total = 0
+        partial = target + ".part"
+        try:
+            with open(partial, "wb") as handle:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if self.args.max_bytes and total > self.args.max_bytes:
+                        raise ValueError(f"exceeds --max-bytes ({self.args.max_bytes})")
+                    handle.write(chunk)
+            os.replace(partial, target)
+        except Exception as exc:
+            if os.path.exists(partial):
+                os.remove(partial)
+            record.update(status="error", error=str(exc))
+            return record
+
+        record.update(path=target, bytes=total)
+        return record
+
+    def resolve_drive(self, drive_urls: list[str]) -> list:
+        """Expand Drive page links into concrete files (folders get listed)."""
+        if not drive_urls:
+            return []
+        if not self.use_drive:
+            print(f"[drive] skipping {len(drive_urls)} Drive link(s) "
+                  f"({'--no-drive' if gdrive else 'gdrive.py not found'})")
+            return []
+
+        print(f"\n[drive] resolving {len(drive_urls)} Drive link(s)...")
+        targets, seen = [], set()
+        for url in drive_urls:
+            try:
+                found = self.drive.expand(url)
+            except gdrive.DriveError as exc:
+                print(f"  [drive] {url}: {exc}", file=sys.stderr)
+                continue
+            except Exception as exc:
+                print(f"  [drive] {url}: {exc}", file=sys.stderr)
+                continue
+            if not found:
+                print(f"  [drive] no files found behind {url}", file=sys.stderr)
+            for target in found:
+                if target.file_id not in seen:
+                    seen.add(target.file_id)
+                    targets.append(target)
+        print(f"[drive] resolved to {len(targets)} file(s)")
+        return targets
 
     # -- driver -----------------------------------------------------------
     def run(self) -> int:
         pending = [(self.args.url, 0)]
         visited_pages: set[str] = set()
         file_urls: list[str] = []
+        drive_urls: list[str] = []
 
         while pending:
             page_url, depth = pending.pop(0)
@@ -387,7 +472,7 @@ class Scraper:
             if not fetched:
                 continue
             html_text, final_url = fetched
-            found_files, found_pages = self.collect(html_text, final_url)
+            found_files, found_pages, found_drive = self.collect(html_text, final_url)
 
             new = 0
             for url in found_files:
@@ -395,26 +480,40 @@ class Scraper:
                     self.seen_urls.add(url)
                     file_urls.append(url)
                     new += 1
-            print(f"[page] {page_url} -> {new} new file(s)")
+            new_drive = 0
+            for url in found_drive:
+                if url not in self.seen_urls:
+                    self.seen_urls.add(url)
+                    drive_urls.append(url)
+                    new_drive += 1
+            extra = f", {new_drive} Drive link(s)" if new_drive else ""
+            print(f"[page] {page_url} -> {new} new file(s){extra}")
 
             if depth < self.args.max_depth:
                 for url in found_pages:
                     if url not in visited_pages:
                         pending.append((url, depth + 1))
 
-        if not file_urls:
+        drive_targets = self.resolve_drive(drive_urls)
+
+        if not file_urls and not drive_targets:
             print("No matching files found.")
             return 1
 
-        print(f"\nFound {len(file_urls)} file(s).")
+        print(f"\nFound {len(file_urls)} direct file(s)"
+              f" and {len(drive_targets)} Drive file(s).")
         if self.args.dry_run:
             for url in file_urls:
                 print("  " + url)
+            for target in drive_targets:
+                print(f"  [drive] {target.name or target.file_id}  ({target.url})")
             return 0
 
         os.makedirs(self.out_dir, exist_ok=True)
         with futures.ThreadPoolExecutor(max_workers=self.args.workers) as pool:
-            for record in pool.map(self.download, file_urls):
+            jobs = list(pool.map(self.download, file_urls))
+            jobs += list(pool.map(self.download_drive, drive_targets))
+            for record in jobs:
                 self.results.append(record)
                 mark = {"ok": "OK  ", "skipped-existing": "SKIP"}.get(record["status"], "FAIL")
                 detail = record.get("path") or record.get("error") or record["status"]
@@ -423,10 +522,13 @@ class Scraper:
                 print(f"  [{mark}] {label}{size}")
 
         ok = sum(1 for r in self.results if r["status"] == "ok")
-        skipped = sum(1 for r in self.results if r["status"] == "skipped-existing")
-        failed = len(self.results) - ok - skipped
+        skipped = sum(1 for r in self.results
+                      if r["status"] in ("skipped-existing", "filtered"))
+        unavailable = sum(1 for r in self.results if r["status"] == "unavailable")
+        failed = len(self.results) - ok - skipped - unavailable
         total_bytes = sum(r["bytes"] for r in self.results if r["status"] == "ok")
-        print(f"\nDownloaded {ok}, skipped {skipped}, failed {failed} "
+        note = f", {unavailable} unavailable on Drive" if unavailable else ""
+        print(f"\nDownloaded {ok}, skipped {skipped}, failed {failed}{note} "
               f"({total_bytes:,} bytes) -> {self.out_dir}")
 
         if self.args.manifest:
@@ -466,6 +568,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="list URLs, download nothing")
     parser.add_argument("--ignore-robots", action="store_true",
                         help="do not consult robots.txt")
+    parser.add_argument("--no-drive", dest="follow_drive", action="store_false",
+                        help="do not follow Google Drive links")
+    parser.add_argument("--drive-folder-depth", type=int, default=2,
+                        help="how deep to recurse into Drive subfolders (default 2)")
     parser.add_argument("--no-full-size", dest="full_size", action="store_false",
                         help="keep Blogger thumbnail URLs instead of upgrading to originals")
     parser.add_argument("--overwrite", dest="skip_existing", action="store_false",

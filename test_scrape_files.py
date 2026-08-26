@@ -12,6 +12,8 @@ import threading
 import unittest
 import urllib.request
 
+import gdrive
+import mock_drive
 import scrape_files
 from scrape_files import (
     LinkParser,
@@ -36,6 +38,21 @@ FIXTURE_PAGE = """<html><head><link rel="stylesheet" href="/style.css"></head><b
 
 SUBPAGE = '<html><body><a href="files/extra.pdf">extra</a></body></html>'
 
+# A post shaped like the real thing: local images, schematics parked on Drive.
+DRIVE_PAGE = """<html><body>
+<img src="files/a.jpg">
+<a href="https://drive.google.com/file/d/SMALLFILEID00000000001/view?usp=sharing">Manual</a>
+<a href="https://drive.google.com/open?id=BIGFILEID000000000000002">Boardview pack</a>
+<a href="https://drive.google.com/file/d/BRDFILEID000000000000003/view">PCB file</a>
+<a href="https://drive.google.com/file/d/QUOTAFILEID00000000000005/view">Rate-limited</a>
+<a href="https://drive.google.com/file/d/PRIVATEFILEID000000000006/view">Private</a>
+<a href="files/doc.pdf">local pdf</a>
+</body></html>"""
+
+DRIVE_FOLDER_PAGE = """<html><body>
+<a href="https://drive.google.com/drive/folders/FOLDERID0000000000000001">Whole folder</a>
+</body></html>"""
+
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):  # keep test output clean
@@ -51,6 +68,7 @@ class FixtureServer:
             with open(os.path.join(self.root, "files", name), "wb") as fh:
                 fh.write(os.urandom(size))
         for name, body in [("index.html", FIXTURE_PAGE), ("subpage.html", SUBPAGE),
+                           ("drive.html", DRIVE_PAGE), ("folder.html", DRIVE_FOLDER_PAGE),
                            ("style.css", "body{}"), ("robots.txt", "User-agent: *\nDisallow: /private/\n")]:
             with open(os.path.join(self.root, name), "w") as fh:
                 fh.write(body)
@@ -64,6 +82,9 @@ class FixtureServer:
     @property
     def url(self):
         return f"http://127.0.0.1:{self.port}/index.html"
+
+    def page(self, name):
+        return f"http://127.0.0.1:{self.port}/{name}"
 
     def stop(self):
         self.httpd.shutdown()
@@ -182,6 +203,93 @@ class TestEndToEnd(unittest.TestCase):
     def test_partial_file_removed_on_failure(self):
         self.scrape("--max-bytes", "600")
         self.assertFalse([n for n in self.downloaded() if n.endswith(".part")])
+
+
+class TestDriveIntegration(unittest.TestCase):
+    """A page whose files live on Google Drive -- the schematic-blog case."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = FixtureServer()
+        cls.drive, base = mock_drive.start()
+        cls._saved = (gdrive.DOWNLOAD_ENDPOINT, gdrive.DOCS_EXPORT, gdrive.FOLDER_PAGE)
+        gdrive.DOWNLOAD_ENDPOINT = base + "/download"
+        gdrive.DOCS_EXPORT = base + "/{kind}/d/{file_id}/export"
+        gdrive.FOLDER_PAGE = base + "/drive/folders/{file_id}"
+
+    @classmethod
+    def tearDownClass(cls):
+        gdrive.DOWNLOAD_ENDPOINT, gdrive.DOCS_EXPORT, gdrive.FOLDER_PAGE = cls._saved
+        cls.drive.shutdown()
+        cls.server.stop()
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.out, ignore_errors=True)
+
+    def scrape(self, page="drive.html", *extra):
+        return main([self.server.page(page), "-o", self.out, "--delay", "0", *extra])
+
+    def downloaded(self):
+        return sorted(os.listdir(self.out))
+
+    def test_drive_links_are_followed_and_downloaded(self):
+        self.scrape()
+        got = self.downloaded()
+        self.assertIn("service_manual.pdf", got)   # plain Drive file
+        self.assertIn("boardview_pack.rar", got)   # needed virus-scan confirmation
+        self.assertIn("mainboard.brd", got)        # schematic format
+
+    def test_drive_files_get_their_real_names_and_contents(self):
+        self.scrape()
+        with open(os.path.join(self.out, "boardview_pack.rar"), "rb") as fh:
+            self.assertTrue(fh.read(4).startswith(b"Rar!"))
+
+    def test_local_files_still_downloaded_alongside_drive(self):
+        self.scrape()
+        self.assertIn("doc.pdf", self.downloaded())
+        self.assertIn("a.jpg", self.downloaded())
+
+    def test_unavailable_drive_files_are_not_saved_as_html(self):
+        self.scrape()
+        for name in self.downloaded():
+            path = os.path.join(self.out, name)
+            with open(path, "rb") as fh:
+                head = fh.read(200).lower()
+            self.assertNotIn(b"<html", head, f"{name} is an HTML error page")
+
+    def test_unavailable_drive_files_are_reported(self):
+        import json
+        manifest = os.path.join(self.out, "..", "m.json")
+        self.scrape("drive.html", "--manifest", manifest)
+        with open(manifest) as fh:
+            records = json.load(fh)["files"]
+        os.remove(manifest)
+        unavailable = {r["error"] for r in records if r["status"] == "unavailable"}
+        self.assertEqual(len(unavailable), 2)
+        self.assertTrue(any("quota" in e.lower() for e in unavailable))
+        self.assertTrue(any("permission" in e.lower() for e in unavailable))
+
+    def test_drive_folder_expands_to_all_files(self):
+        self.scrape("folder.html")
+        got = self.downloaded()
+        for name in ("service_manual.pdf", "boardview_pack.rar", "mainboard.brd",
+                     "circuit.fz"):
+            self.assertIn(name, got)
+
+    def test_no_drive_flag_skips_them(self):
+        self.scrape("drive.html", "--no-drive")
+        self.assertNotIn("service_manual.pdf", self.downloaded())
+
+    def test_type_filter_applies_to_resolved_drive_filenames(self):
+        self.scrape("drive.html", "--types", "eda")
+        got = self.downloaded()
+        self.assertIn("mainboard.brd", got)
+        self.assertNotIn("service_manual.pdf", got)
+
+    def test_eda_group_covers_schematic_formats(self):
+        for ext in ("brd", "sch", "fz", "cad", "dsn", "kicad_pcb"):
+            self.assertIn(ext, scrape_files.EXTENSION_GROUPS["eda"])
 
 
 if __name__ == "__main__":
