@@ -1,0 +1,367 @@
+{
+  "_comment": [
+    "Marketplace fee + shipping model. Every number here is a knob you should",
+    "check against your own eBay invoices - eBay changes rates and your store",
+    "subscription tier changes them again. Rates below are US, no store, 2025.",
+    "Final value fee is charged on the TOTAL the buyer pays (item + shipping)."
+  ],
+  "feeModels": {
+    "default": {
+      "label": "eBay standard",
+      "tiers": [
+        {
+          "upTo": 7500,
+          "pct": 0.1325
+        },
+        {
+          "upTo": null,
+          "pct": 0.0235
+        }
+      ],
+      "perOrderFixed": 0.4,
+      "perOrderFixedUnder10": 0.3,
+      "flatFee": 0
+    },
+    "computers": {
+      "label": "eBay computers/tablets",
+      "tiers": [
+        {
+          "upTo": 2500,
+          "pct": 0.1325
+        },
+        {
+          "upTo": null,
+          "pct": 0.0235
+        }
+      ],
+      "perOrderFixed": 0.4,
+      "perOrderFixedUnder10": 0.3,
+      "flatFee": 0
+    },
+    "local_cash": {
+      "label": "Local resale (cash, no platform fee)",
+      "tiers": [
+        {
+          "upTo": null,
+          "pct": 0.0
+        }
+      ],
+      "perOrderFixed": 0,
+      "perOrderFixedUnder10": 0,
+      "flatFee": 0
+    },
+    "ebay_motors": {
+      "label": "eBay Motors vehicle",
+      "tiers": [
+        {
+          "upTo": null,
+          "pct": 0.0
+        }
+      ],
+      "perOrderFixed": 0,
+      "perOrderFixedUnder10": 0,
+      "flatFee": 125
+    }
+  },
+  "sections": {
+    "electronics": {
+      "feeModel": "default",
+      "resaleChannel": "ebay",
+      "shipsWell": true,
+      "localHaircut": 0.0
+    },
+    "appliances": {
+      "feeModel": "local_cash",
+      "resaleChannel": "local",
+      "shipsWell": false,
+      "_comment": "Washers/fridges/ranges resell locally for cash. eBay comps are used only as a sanity ceiling; the haircut reflects that local buyers haggle and you deliver.",
+      "localHaircut": 0.25
+    },
+    "vehicles": {
+      "feeModel": "ebay_motors",
+      "resaleChannel": "local",
+      "shipsWell": false,
+      "localHaircut": 0.12
+    }
+  },
+  "shippingTable": [
+    {
+      "maxLb": 1,
+      "cost": 8.5,
+      "supplies": 2
+    },
+    {
+      "maxLb": 3,
+      "cost": 12.0,
+      "supplies": 3
+    },
+    {
+      "maxLb": 6,
+      "cost": 16.5,
+      "supplies": 4
+    },
+    {
+      "maxLb": 10,
+      "cost": 22.0,
+      "supplies": 6
+    },
+    {
+      "maxLb": 20,
+      "cost": 32.0,
+      "supplies": 9
+    },
+    {
+      "maxLb": 40,
+      "cost": 52.0,
+      "supplies": 14
+    },
+    {
+      "maxLb": 70,
+      "cost": 78.0,
+      "supplies": 20
+    },
+    {
+      "maxLb": null,
+      "cost": 0,
+      "supplies": 0,
+      "localOnly": true
+    }
+  ],
+  "weightRules": [
+    {
+      "lb": 0.8,
+      "match": [
+        "phone",
+        "iphone",
+        "pixel",
+        "galaxy s",
+        "smartphone",
+        "ipod"
+      ]
+    },
+    {
+      "lb": 1.0,
+      "match": [
+        "ram",
+        "ssd",
+        "memory",
+        "cpu",
+        "processor",
+        "ryzen",
+        "core i7",
+        "core i5",
+        "core i9"
+      ]
+    },
+    {
+      "lb": 1.5,
+      "match": [
+        "tablet",
+        "ipad",
+        "kindle",
+        "nintendo switch",
+        "steam deck",
+        "handheld"
+      ]
+    },
+    {
+      "lb": 3.0,
+      "match": [
+        "graphics card",
+        "gpu",
+        "rtx",
+        "gtx",
+        "radeon",
+        "quadro",
+        "video card"
+      ]
+    },
+    {
+      "lb": 3.0,
+      "match": [
+        "motherboard",
+        "mobo",
+        "power supply",
+        "psu",
+        "router",
+        "modem"
+      ]
+    },
+    {
+      "lb": 6.0,
+      "match": [
+        "laptop",
+        "macbook",
+        "notebook",
+        "chromebook",
+        "thinkpad"
+      ]
+    },
+    {
+      "lb": 8.0,
+      "match": [
+        "xbox",
+        "playstation",
+        "ps4",
+        "ps5",
+        "console",
+        "gamecube",
+        "nintendo 64",
+        "snes",
+        "nes"
+      ]
+    },
+    {
+      "lb": 10.0,
+      "match": [
+        "receiver",
+        "av receiver",
+        "turntable",
+        "cd player",
+        "mixer",
+        "synthesizer",
+        "keyboard workstation"
+      ]
+    },
+    {
+      "lb": 14.0,
+      "match": [
+        "monitor",
+        "24 inch monitor",
+        "27 inch",
+        "printer"
+      ]
+    },
+    {
+      "lb": 22.0,
+      "match": [
+        "desktop",
+        "tower",
+        "pc",
+        "gaming pc",
+        "workstation",
+        "mac pro",
+        "imac"
+      ]
+    },
+    {
+      "lb": 30.0,
+      "match": [
+        "amplifier",
+        "amp",
+        "tube amp",
+        "integrated amp",
+        "power amp",
+        "guitar amp",
+        "subwoofer"
+      ]
+    },
+    {
+      "lb": 25.0,
+      "match": [
+        "tube radio",
+        "console radio",
+        "hi-fi",
+        "stereo"
+      ]
+    },
+    {
+      "lb": 999,
+      "match": [
+        "tv",
+        "television",
+        "oled",
+        "qled",
+        "plasma",
+        "projector screen",
+        "refrigerator",
+        "washer",
+        "dryer",
+        "dishwasher",
+        "range",
+        "oven",
+        "freezer",
+        "treadmill"
+      ]
+    }
+  ],
+  "_weightRulesNote": "First match wins, so put specific terms above general ones. lb: 999 forces local-pickup-only pricing (no shipping cost, but the buyer pool is local).",
+  "resaleHaircuts": [
+    {
+      "id": "branded-title",
+      "match": [
+        "salvage title",
+        "rebuilt title",
+        "branded title",
+        "reconstructed title",
+        "salvage vehicle"
+      ],
+      "pct": 0.3,
+      "note": "A branded title cuts resale by roughly a third no matter how well the repair is done."
+    },
+    {
+      "id": "no-title",
+      "match": [
+        "no title",
+        "lost title",
+        "bill of sale only",
+        "title lost"
+      ],
+      "pct": 0.35,
+      "note": "No title means a limited buyer pool and a paperwork fight."
+    },
+    {
+      "id": "high-mileage",
+      "match": [
+        "high miles",
+        "high mileage",
+        "over 200k",
+        "250k miles",
+        "300k miles"
+      ],
+      "pct": 0.15,
+      "note": "High-mileage examples sit below the comp median."
+    },
+    {
+      "id": "missing-accessories",
+      "match": [
+        "no charger",
+        "no power cord",
+        "no remote",
+        "no controller",
+        "no stand",
+        "no cables",
+        "no power supply",
+        "no keys"
+      ],
+      "pct": 0.08,
+      "note": "Buyers discount an incomplete package, and you will likely supply the missing piece."
+    },
+    {
+      "id": "cosmetic-damage",
+      "match": [
+        "scratched",
+        "dented",
+        "scuffed",
+        "cosmetic damage",
+        "yellowed",
+        "rust",
+        "water stains"
+      ],
+      "pct": 0.12,
+      "note": "Cosmetic condition drives used-electronics pricing more than sellers expect."
+    },
+    {
+      "id": "smoke-pet",
+      "match": [
+        "smoke smell",
+        "smoker home",
+        "pet hair",
+        "musty"
+      ],
+      "pct": 0.15,
+      "note": "Smoke and pet odour are the top cause of returns on shipped electronics."
+    }
+  ],
+  "_resaleHaircutsNote": "Multiplicative reductions applied to the comp median when the listing text matches. They compound, and the total is capped at 60% so one badly-worded ad cannot zero out a valuation."
+}

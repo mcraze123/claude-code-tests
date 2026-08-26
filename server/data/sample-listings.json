@@ -1,0 +1,260 @@
+{
+  "_comment": [
+    "Offline fixture source. Enabled via ENABLED_SOURCES=sample so you can see",
+    "the whole pipeline - scoring, badges, distance, notifications - working",
+    "before you have eBay keys or a live marketplace feed. Each fixture carries",
+    "its own comp set, so no network call is made for these.",
+    "minutesAgo/offsetMi/bearingDeg are resolved against your current location",
+    "at poll time, which is why the fixtures always look freshly listed."
+  ],
+  "listings": [
+    {
+      "externalId": "s-gpu-3080",
+      "section": "electronics",
+      "title": "EVGA RTX 3080 10GB - no display, for parts or repair",
+      "description": "Card powers on, fans spin, but no display on any port. Was working then died during a game. No artifacts before it went. Selling as is.",
+      "askPrice": 120,
+      "minutesAgo": 7,
+      "offsetMi": 4.1,
+      "bearingDeg": 40,
+      "locationName": "Fremont",
+      "comps": [
+        { "title": "EVGA RTX 3080 10GB FTW3 Ultra", "price": 340 },
+        { "title": "NVIDIA RTX 3080 10GB Founders Edition", "price": 355 },
+        { "title": "EVGA GeForce RTX 3080 10GB XC3", "price": 325 },
+        { "title": "RTX 3080 10GB graphics card tested", "price": 360 },
+        { "title": "MSI RTX 3080 10GB Ventus 3X", "price": 330 },
+        { "title": "ASUS TUF RTX 3080 10GB OC", "price": 349 },
+        { "title": "EVGA RTX 3080 10GB FTW3 used", "price": 318 },
+        { "title": "RTX 3080 10GB gaming graphics card", "price": 344 }
+      ]
+    },
+    {
+      "externalId": "s-tv-lg-65",
+      "section": "electronics",
+      "title": "LG 65\" OLED C1 TV - cracked screen, everything else works",
+      "description": "Kids threw a controller. Cracked panel with lines but sound and smart features all work. Boards are perfect. $60 obo.",
+      "askPrice": 60,
+      "minutesAgo": 22,
+      "offsetMi": 11.5,
+      "bearingDeg": 200,
+      "locationName": "San Jose",
+      "comps": [
+        { "title": "LG OLED65C1PUB 65 inch OLED 4K TV", "price": 780 },
+        { "title": "LG C1 65\" OLED Smart TV", "price": 820 },
+        { "title": "LG OLED 65 C1 series 4K", "price": 760 },
+        { "title": "LG C1 OLED 65 inch television", "price": 799 },
+        { "title": "LG OLED65C1 4K Smart TV tested", "price": 845 }
+      ]
+    },
+    {
+      "externalId": "s-macbook-a2141",
+      "section": "electronics",
+      "title": "MacBook Pro 16 2019 - cracked screen, no hard drive",
+      "description": "i9, 16GB. Screen is cracked in the corner and there is no SSD installed. Boots to recovery over the network fine. Battery is fine.",
+      "askPrice": 240,
+      "minutesAgo": 3,
+      "offsetMi": 2.8,
+      "bearingDeg": 310,
+      "locationName": "Hayward",
+      "comps": [
+        { "title": "Apple MacBook Pro 16 2019 i9 16GB 512GB", "price": 720 },
+        { "title": "MacBook Pro 16-inch 2019 Core i9 working", "price": 760 },
+        { "title": "Apple MacBook Pro 16 2019 i9 1TB", "price": 810 },
+        { "title": "MacBook Pro 16 inch 2019 i9 16GB", "price": 735 },
+        { "title": "MacBook Pro 2019 16\" i9 space gray", "price": 690 },
+        { "title": "Apple MacBook Pro 16 2019 tested good", "price": 745 }
+      ]
+    },
+    {
+      "externalId": "s-marantz-2270",
+      "section": "electronics",
+      "title": "Marantz 2270 receiver - one channel out, unrestored",
+      "description": "Estate find. Left channel drops out and it hums. Never been recapped. Faceplate is clean, wood case included.",
+      "askPrice": 300,
+      "minutesAgo": 41,
+      "offsetMi": 18.2,
+      "bearingDeg": 95,
+      "locationName": "Livermore",
+      "comps": [
+        { "title": "Marantz 2270 stereo receiver restored", "price": 1250 },
+        { "title": "Vintage Marantz 2270 receiver serviced", "price": 1180 },
+        { "title": "Marantz 2270 AM FM stereo receiver", "price": 950 },
+        { "title": "Marantz model 2270 receiver with case", "price": 1100 },
+        { "title": "Marantz 2270 receiver working", "price": 1020 }
+      ]
+    },
+    {
+      "externalId": "s-ps5-hdmi",
+      "section": "electronics",
+      "title": "PS5 disc edition - no video, broken hdmi port",
+      "description": "Console turns on, fan runs, but nothing on screen. Pretty sure the HDMI port is bent, kid tripped over the cable. Controller included.",
+      "askPrice": 145,
+      "minutesAgo": 12,
+      "offsetMi": 6.4,
+      "bearingDeg": 15,
+      "locationName": "Union City",
+      "comps": [
+        { "title": "Sony PlayStation 5 Disc Edition console", "price": 385 },
+        { "title": "PS5 disc console with controller tested", "price": 400 },
+        { "title": "PlayStation 5 disc version console bundle", "price": 375 },
+        { "title": "Sony PS5 console disc edition working", "price": 395 },
+        { "title": "PS5 console disc edition used good", "price": 360 },
+        { "title": "PlayStation 5 disc console", "price": 390 }
+      ]
+    },
+    {
+      "externalId": "s-iphone-locked",
+      "section": "electronics",
+      "title": "iPhone 13 Pro 256gb - icloud locked, cracked screen",
+      "description": "Bought at an auction, seller never removed the account. iCloud locked. Screen also cracked. Selling cheap for parts.",
+      "askPrice": 95,
+      "minutesAgo": 55,
+      "offsetMi": 9.1,
+      "bearingDeg": 260,
+      "locationName": "Newark",
+      "comps": [
+        { "title": "Apple iPhone 13 Pro 256GB unlocked", "price": 430 },
+        { "title": "iPhone 13 Pro 256GB graphite unlocked", "price": 455 },
+        { "title": "Apple iPhone 13 Pro 256 GB good condition", "price": 410 },
+        { "title": "iPhone 13 Pro 256GB tested working", "price": 445 }
+      ]
+    },
+    {
+      "externalId": "s-switch-drift",
+      "section": "electronics",
+      "title": "Nintendo Switch OLED with joycon drift",
+      "description": "Works great except the left joycon has stick drift. Comes with dock and cables. Screen is flawless.",
+      "askPrice": 130,
+      "minutesAgo": 9,
+      "offsetMi": 3.3,
+      "bearingDeg": 120,
+      "locationName": "Fremont",
+      "comps": [
+        { "title": "Nintendo Switch OLED console white", "price": 265 },
+        { "title": "Nintendo Switch OLED model with dock", "price": 280 },
+        { "title": "Nintendo Switch OLED console tested", "price": 255 },
+        { "title": "Switch OLED console neon joycons", "price": 272 },
+        { "title": "Nintendo Switch OLED bundle", "price": 288 }
+      ]
+    },
+    {
+      "externalId": "s-zenith-radio",
+      "section": "electronics",
+      "title": "Zenith console radio tube - hums, needs recap",
+      "description": "1940s Zenith console. Lights up, hums loudly, weak audio. All tubes present. Cabinet has some veneer lifting.",
+      "askPrice": 40,
+      "minutesAgo": 88,
+      "offsetMi": 24.6,
+      "bearingDeg": 350,
+      "locationName": "Walnut Creek",
+      "comps": [
+        { "title": "Zenith console radio tube restored working", "price": 385 },
+        { "title": "Antique Zenith tube console radio", "price": 300 },
+        { "title": "Zenith tube radio console 1940s", "price": 340 },
+        { "title": "Vintage Zenith console radio serviced", "price": 420 }
+      ]
+    },
+    {
+      "externalId": "s-dell-barebones",
+      "section": "electronics",
+      "title": "Gaming PC no gpu no ram - won't post",
+      "description": "i7-9700K build, motherboard and PSU only, no RAM and no graphics card. Was not posting before I stripped it. 750w PSU included.",
+      "askPrice": 60,
+      "minutesAgo": 130,
+      "offsetMi": 7.7,
+      "bearingDeg": 70,
+      "locationName": "Milpitas",
+      "comps": [
+        { "title": "Intel i7-9700K gaming PC desktop", "price": 320 },
+        { "title": "i7 9700K desktop computer tower", "price": 290 },
+        { "title": "Gaming PC i7-9700K 16GB", "price": 355 },
+        { "title": "Custom gaming desktop i7 9700K", "price": 310 }
+      ]
+    },
+    {
+      "externalId": "s-washer-lg",
+      "section": "appliances",
+      "title": "LG front load washer - error code, won't drain",
+      "description": "Throws an OE code and will not drain. Otherwise the drum and everything else is fine. Only 4 years old.",
+      "askPrice": 50,
+      "minutesAgo": 15,
+      "offsetMi": 5.2,
+      "bearingDeg": 180,
+      "locationName": "San Leandro",
+      "comps": [
+        { "title": "LG front load washer working", "price": 420 },
+        { "title": "LG WM3900 front loading washer", "price": 480 },
+        { "title": "LG front load washing machine tested", "price": 400 },
+        { "title": "LG washer front loader good condition", "price": 445 }
+      ]
+    },
+    {
+      "externalId": "s-dryer-whirlpool",
+      "section": "appliances",
+      "title": "Whirlpool electric dryer - no heat",
+      "description": "Tumbles fine, blows cold. Probably the element. Free to whoever hauls it, I just want it gone.",
+      "askPrice": 0,
+      "minutesAgo": 4,
+      "offsetMi": 2.1,
+      "bearingDeg": 220,
+      "locationName": "Hayward",
+      "comps": [
+        { "title": "Whirlpool electric dryer working", "price": 260 },
+        { "title": "Whirlpool electric clothes dryer tested", "price": 280 },
+        { "title": "Whirlpool dryer electric good condition", "price": 240 },
+        { "title": "Whirlpool electric dryer white", "price": 265 }
+      ]
+    },
+    {
+      "externalId": "s-fridge-samsung",
+      "section": "appliances",
+      "title": "Samsung french door fridge - not cooling",
+      "description": "Stopped getting cold last week. Freezer side is also warm. Ice maker works. Needs someone who knows fridges.",
+      "askPrice": 75,
+      "minutesAgo": 200,
+      "offsetMi": 13.9,
+      "bearingDeg": 25,
+      "locationName": "Dublin",
+      "comps": [
+        { "title": "Samsung french door refrigerator working", "price": 720 },
+        { "title": "Samsung 28 cu ft french door fridge", "price": 850 },
+        { "title": "Samsung french door refrigerator stainless", "price": 780 }
+      ]
+    },
+    {
+      "externalId": "s-civic-2009",
+      "section": "vehicles",
+      "title": "2009 Honda Civic - won't start, clean title",
+      "description": "Cranks but will not start. Was running fine until last month. 178k miles, body is straight, interior good. Clean title in hand.",
+      "askPrice": 1200,
+      "minutesAgo": 33,
+      "offsetMi": 16.3,
+      "bearingDeg": 300,
+      "locationName": "Pleasanton",
+      "comps": [
+        { "title": "2009 Honda Civic LX sedan running", "price": 5200 },
+        { "title": "2009 Honda Civic EX 4dr", "price": 5800 },
+        { "title": "Honda Civic 2009 sedan clean title", "price": 4900 },
+        { "title": "2009 Civic LX automatic runs great", "price": 5400 }
+      ]
+    },
+    {
+      "externalId": "s-f150-trans",
+      "section": "vehicles",
+      "title": "2011 Ford F-150 - transmission slipping, rebuilt title",
+      "description": "5.0 V8, 210k. Transmission slips hard in 3rd. Rebuilt title from a 2016 rear end collision. Everything else works.",
+      "askPrice": 2400,
+      "minutesAgo": 260,
+      "offsetMi": 28.4,
+      "bearingDeg": 60,
+      "locationName": "Tracy",
+      "comps": [
+        { "title": "2011 Ford F-150 XLT 5.0 V8 crew cab", "price": 11500 },
+        { "title": "Ford F-150 2011 supercrew running", "price": 12200 },
+        { "title": "2011 F-150 XLT 4x2 clean", "price": 10800 },
+        { "title": "2011 Ford F150 pickup truck", "price": 11900 }
+      ]
+    }
+  ]
+}
