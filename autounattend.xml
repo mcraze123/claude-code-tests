@@ -1,0 +1,337 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================================
+  autounattend.xml - universal answer file
+  Windows 8 / 8.1 / 10 / 11, both x86 and x64, from ONE file at the USB root.
+  Built for a Media Creation Tool USB created with the "Both" architecture
+  option (root contains \x86\ and \x64\ folders).
+  ============================================================================
+
+  WHAT IT DOES
+    - Skips the "Enter your product key" page (empty <Key/>; firmware/BIOS
+      OEM keys are still detected and used automatically)
+    - Accepts the EULA
+    - Sets locale to en-US and skips the region / keyboard OOBE pages
+    - Sets time zone to Eastern (handles EST/EDT automatically)
+    - Random computer name
+    - Creates local account "User", blank password, in Administrators
+    - Skips the Microsoft-account requirement (HideOnlineAccountScreens plus
+      the BypassNRO registry value, which is what actually works on Win 11 22H2+)
+    - Stops Windows ever demanding a password change on the account it
+      creates (see the FirstLogonCommands block in the oobeSystem pass).
+      The customer can still change it whenever they want.
+    - Applies the Windows 11 TPM / Secure Boot / RAM / CPU / Storage bypass
+      (no effect on 8/10, safe to leave in)
+
+  WHAT IT DELIBERATELY LEAVES MANUAL
+    - Disk / partition selection. No <DiskConfiguration> or <ImageInstall>
+      block, so "Where do you want to install Windows?" prompts normally.
+      This is intentional: nothing here can wipe a disk unattended.
+    - Edition selection, if install.wim/esd has multiple editions.
+    - Clicking "Install now" on the first screen (unattend cannot skip this).
+
+  WHY EVERY COMPONENT APPEARS TWICE
+    Each <component> is duplicated with processorArchitecture="amd64" and
+    "x86". Setup ignores whichever copy does not match the environment it
+    booted, so one file serves both halves of the dual-arch USB.
+
+  HOW TO INSTALL IT ON THE USB
+    Copy this file, named exactly autounattend.xml, to the ROOT of the stick.
+    Optionally also copy it to \x64\sources\ and \x86\sources\ - harmless
+    redundancy, the root copy wins.
+
+  CUSTOMISING
+    - Username: change <DisplayName> and <Name> (4 places: amd64 + x86).
+    - Password: put it in <Value> and keep <PlainText>true</PlainText>.
+      If you rename the account, also change "name='User'" in the Order 3
+      command of FirstLogonCommands (2 places: amd64 + x86).
+    - Time zone: replace "Eastern Standard Time" (Windows TZ ID, not Olson).
+    - Locale: replace en-US throughout.
+    - To also skip the EDITION picker, put a generic key in <Key> - but note
+      those keys differ per OS version, so doing that breaks universality.
+      Win10/11 Pro:  VK7JG-NPHTM-C97JM-9MPGT-3V66T
+      Win10/11 Home: YTMG3-N6DKC-DKB77-7M9GH-8HVX7
+      Win8.1 Pro:    GCRJD-8NW9H-F2CDX-CCM8D-9D6T9
+      Win8.1 Core:   334NH-RXG76-64THK-C7CKG-D3VPT
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+    <!-- ==================================================================
+         PASS 1: windowsPE - runs inside the Setup boot environment
+         ================================================================== -->
+    <settings pass="windowsPE">
+
+        <!-- ========================= amd64 ========================= -->
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <SetupUILanguage>
+                <UILanguage>en-US</UILanguage>
+            </SetupUILanguage>
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <UserData>
+                <!-- <Key> is REQUIRED even when empty. A <ProductKey> block
+                     without it is what causes "Windows cannot read the
+                     <ProductKey> setting from the unattend answer file". -->
+                <ProductKey>
+                    <Key></Key>
+                </ProductKey>
+                <AcceptEula>true</AcceptEula>
+            </UserData>
+            <RunSynchronous>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>4</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>5</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+            </RunSynchronous>
+        </component>
+
+        <!-- ========================== x86 ========================== -->
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <SetupUILanguage>
+                <UILanguage>en-US</UILanguage>
+            </SetupUILanguage>
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Setup" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <UserData>
+                <ProductKey>
+                    <Key></Key>
+                </ProductKey>
+                <AcceptEula>true</AcceptEula>
+            </UserData>
+            <RunSynchronous>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>4</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>5</Order>
+                    <Path>reg.exe add HKLM\SYSTEM\Setup\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+            </RunSynchronous>
+        </component>
+
+    </settings>
+
+    <!-- ==================================================================
+         PASS 2: specialize - runs after the image is applied, before OOBE
+         ================================================================== -->
+    <settings pass="specialize">
+
+        <!-- ========================= amd64 ========================= -->
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- "*" = let Windows generate a random name (DESKTOP-XXXXXXX on
+                 10/11 client, WIN-XXXXXXXXXXX on 8/Server). -->
+            <ComputerName>*</ComputerName>
+            <TimeZone>Eastern Standard Time</TimeZone>
+        </component>
+
+        <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <RunSynchronous>
+                <!-- Lets OOBE offer a local account without an internet
+                     connection. Required on Win 11 22H2+; inert on 8/10. -->
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Path>reg.exe add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+            </RunSynchronous>
+        </component>
+
+        <!-- ========================== x86 ========================== -->
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <ComputerName>*</ComputerName>
+            <TimeZone>Eastern Standard Time</TimeZone>
+        </component>
+
+        <component name="Microsoft-Windows-Deployment" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <RunSynchronous>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Path>reg.exe add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+            </RunSynchronous>
+        </component>
+
+    </settings>
+
+    <!-- ==================================================================
+         PASS 3: oobeSystem - the first-boot out-of-box experience
+         ================================================================== -->
+    <settings pass="oobeSystem">
+
+        <!-- ========================= amd64 ========================= -->
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- Present so OOBE does not ask "Is this the right country?"
+                 and "Is this the right keyboard layout?" -->
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- ============================================================
+                 PASSWORD EXPIRATION - runs at the first logon of "User"
+                 ============================================================
+                 An account created by an answer file does NOT get the
+                 "password never expires" flag that an account created by
+                 hand in OOBE gets. It therefore inherits the machine's
+                 default maximum password age (42 days), and Windows starts
+                 nagging - then forces - a password change part way through
+                 the refurb. These three commands remove that.
+
+                 1. net accounts  - clears the machine-wide maximum password
+                    age (MaximumPasswordAge = 0 / unlimited). This is the one
+                    that matters, it works on every Windows version, and it
+                    also covers any extra account made later.
+                 2. Set-LocalUser - sets the per-account "password never
+                    expires" flag on Win 10 / 11 (PowerShell LocalAccounts
+                    module; absent on 8/8.1, the command just fails and OOBE
+                    moves on).
+                 3. wmic          - the same per-account flag for Win 8/8.1,
+                    where step 2 does not exist. WMIC is deprecated on recent
+                    Win 11 builds; if it is gone the command fails harmlessly
+                    because step 2 already did the job.
+
+                 Nothing here stops the customer changing the password when
+                 they feel like it - it only stops Windows demanding it. -->
+            <FirstLogonCommands>
+                <SynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <CommandLine>cmd /c net accounts /maxpwage:unlimited</CommandLine>
+                    <Description>Remove the maximum password age</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-LocalUser | Where-Object Enabled | Set-LocalUser -PasswordNeverExpires $true"</CommandLine>
+                    <Description>Password never expires (Windows 10/11)</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <CommandLine>cmd /c wmic useraccount where "name='User'" set PasswordExpires=FALSE</CommandLine>
+                    <Description>Password never expires (fallback for Windows 8/8.1)</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+            </FirstLogonCommands>
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Home</NetworkLocation>
+                <ProtectYourPC>3</ProtectYourPC>
+            </OOBE>
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Password>
+                            <Value></Value>
+                            <PlainText>true</PlainText>
+                        </Password>
+                        <DisplayName>User</DisplayName>
+                        <Group>Administrators</Group>
+                        <Name>User</Name>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+        </component>
+
+        <!-- ========================== x86 ========================== -->
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- Same password-expiry fix as the amd64 block above. -->
+            <FirstLogonCommands>
+                <SynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <CommandLine>cmd /c net accounts /maxpwage:unlimited</CommandLine>
+                    <Description>Remove the maximum password age</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-LocalUser | Where-Object Enabled | Set-LocalUser -PasswordNeverExpires $true"</CommandLine>
+                    <Description>Password never expires (Windows 10/11)</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <CommandLine>cmd /c wmic useraccount where "name='User'" set PasswordExpires=FALSE</CommandLine>
+                    <Description>Password never expires (fallback for Windows 8/8.1)</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+            </FirstLogonCommands>
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Home</NetworkLocation>
+                <ProtectYourPC>3</ProtectYourPC>
+            </OOBE>
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Password>
+                            <Value></Value>
+                            <PlainText>true</PlainText>
+                        </Password>
+                        <DisplayName>User</DisplayName>
+                        <Group>Administrators</Group>
+                        <Name>User</Name>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+        </component>
+
+    </settings>
+
+</unattend>
