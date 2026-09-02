@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================================
+  WDS CLIENT UNATTEND - x64 (64-bit)
+  ============================================================================
+
+  WHAT THIS FILE IS
+    A WDS *client* unattend file. It carries the windowsPE pass only - the
+    phase that runs inside the WinPE boot image after the machine PXE-boots,
+    before any image is applied. Its job is to automate the WDS client
+    screens.
+
+  IT IS NOT PER-IMAGE
+    WDS allows exactly ONE client unattend per architecture per server. This
+    file is therefore shared by every x64 (64-bit) image you deploy -
+    Windows 7, 8.1 and 10 alike. That is why it contains nothing
+    version-specific. Everything version-specific lives in the per-image
+    files (image-unattend-*.xml).
+
+  HOW TO ASSIGN IT (Server 2019 WDS console)
+    Copy this file to  C:\RemoteInstall\WdsClientUnattend\  on the server,
+    then: right-click the server -> Properties -> Client tab
+    -> tick "Enable unattended installation"
+    -> next to x64 (64-bit) click Browse... and pick this file -> OK.
+
+  WHAT IT DOES
+    Sets the WinPE locale so the client skips the "choose your locale and
+    keyboard" screen that WDS shows before the logon prompt. That is all.
+
+  WHAT IT DELIBERATELY DOES NOT DO
+    - No <Credentials>. You will be prompted for domain credentials at the
+      client, which is the safer behaviour. A credentials block here is
+      stored in PLAIN TEXT on the server and sent to the client over the
+      network. If you accept that and want it anyway, uncomment the block
+      below and fill it in - but read wds/README.md first, because there is
+      a live CVE about exactly this.
+    - No <ImageSelection>. You pick the image at the client. If you set it,
+      WDS also requires <InstallTo>, which in turn requires a
+      <DiskConfiguration> that partitions the disk automatically - and that
+      wipes the target without asking. Left out on purpose, same as the USB
+      answer files.
+    - No <DiskConfiguration>. "Where do you want to install Windows?" prompts
+      normally. Nothing in this file can wipe a disk unattended.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+    <settings pass="windowsPE">
+
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <SetupUILanguage>
+                <UILanguage>en-US</UILanguage>
+            </SetupUILanguage>
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <!-- Uncomment to log the WDS client in automatically. Plain text on
+             disk and on the wire - see wds/README.md.
+        <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <WindowsDeploymentServices>
+                <Login>
+                    <Credentials>
+                        <Domain>YOURDOMAIN</Domain>
+                        <Username>wdsuser</Username>
+                        <Password>changeme</Password>
+                    </Credentials>
+                </Login>
+            </WindowsDeploymentServices>
+        </component>
+        -->
+
+    </settings>
+
+</unattend>

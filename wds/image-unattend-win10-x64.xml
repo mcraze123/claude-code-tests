@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================================
+  WDS IMAGE UNATTEND - Windows 10, x64 (64-bit)
+  ============================================================================
+
+  WHAT THIS FILE IS
+    A WDS *image* unattend file. It carries the specialize and oobeSystem
+    passes only - the phases that run after the image has been applied to the
+    target machine. It is the direct equivalent of the bottom two thirds of
+    the USB autounattend.xml.
+
+    It deliberately contains NO windowsPE pass. On WDS that half of the job
+    belongs to the *client* unattend (client-unattend-x64.xml), which
+    is assigned once at server level, not per image. Putting a windowsPE pass
+    in here would simply be ignored.
+
+  HOW TO ASSIGN IT (Server 2019 WDS console)
+    Install Images -> <your image group> -> right-click the Windows 10
+    x64 (64-bit) image -> Properties -> General tab
+    -> tick "Allow image to install in unattended mode"
+    -> Select File... -> browse to this file -> OK.
+    WDS copies it into the per-image \Unattend folder under RemoteInstall.
+    Assign it to that one image only - the architecture below must match.
+
+  !! READ THIS BEFORE YOU DEPLOY - THE ACCOUNT CLASH !!
+    This file creates a local account called "User" during OOBE. If the
+    golden image you captured ALREADY contains an account called "User"
+    (because you made one while building it in the VM), the two collide and
+    you get either a duplicate-name failure or an account that does not
+    behave the way you expect.
+
+    Build the golden image using the built-in Administrator account in audit
+    mode (boot the VM, press Ctrl+Shift+F3 at OOBE, do your updates and
+    tweaks, then sysprep /generalize /oobe /shutdown and capture). Do not
+    create "User" in the VM - let this file create it at deploy time.
+
+    If your existing captured image already has "User" in it, delete the
+    <UserAccounts> block below and keep the rest. The password fix in
+    FirstLogonCommands still works on the account that is already there,
+    because "net accounts" is machine-wide.
+
+  OPTIONAL THINGS NOT ENABLED HERE
+    - <CopyProfile>true</CopyProfile> in the specialize pass copies the
+      profile you customised while building the image onto every new user.
+      Useful for a golden image, but it also copies any mess in that profile,
+      so it is left off deliberately. Add it under Shell-Setup in specialize
+      if you want it.
+    - <ProductKey> in the specialize pass, if you want the key baked in
+      rather than typed. Goes under the same Shell-Setup component.
+
+  CUSTOMISING
+    - Username: change <DisplayName> and <Name>. If you rename the account,
+      also change "name='User'" in the wmic command in FirstLogonCommands.
+    - Password: put it in <Value> and keep <PlainText>true</PlainText>.
+      Note that this file sits on the WDS server and is sent to the client
+      over the network - see the security note in wds/README.md before you
+      put a real password in it.
+    - Time zone: replace "Eastern Standard Time" (Windows TZ ID, not Olson).
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+    <!-- ==================================================================
+         specialize - runs after the image is applied, before OOBE
+         ================================================================== -->
+    <settings pass="specialize">
+
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- "*" = let Windows generate a random name. Change this to a
+                 fixed name only if you assign this file to one machine. -->
+            <ComputerName>*</ComputerName>
+            <TimeZone>Eastern Standard Time</TimeZone>
+        </component>
+
+        <!-- Lets OOBE offer a local account without an internet connection.
+             Needed on Windows 10 builds that pester for a Microsoft account;
+             harmless on the ones that do not. -->
+        <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <RunSynchronous>
+                <RunSynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <Path>reg.exe add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+                </RunSynchronousCommand>
+            </RunSynchronous>
+        </component>
+
+    </settings>
+
+    <!-- ==================================================================
+         oobeSystem - the first-boot out-of-box experience
+         ================================================================== -->
+    <settings pass="oobeSystem">
+
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- Present so OOBE does not ask "Is this the right country?"
+                 and "Is this the right keyboard layout?" -->
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- ============================================================
+                 PASSWORD EXPIRATION - runs at the first logon of "User"
+                 ============================================================
+                 An account created by an answer file does not get the
+                 "password never expires" flag that an account created by hand
+                 in OOBE gets, so it inherits the machine default maximum
+                 password age of 42 days and Windows starts demanding a change
+                 part way through the refurb.
+
+                 "net accounts" clears the machine-wide maximum password age.
+                 That is the command that actually matters, it works on every
+                 Windows version, and it covers any extra account made later.
+                 Windows 10 has both, so the PowerShell call runs first and the
+                 wmic call is a fallback in case it is unavailable.
+
+                 None of this stops the customer changing the password when
+                 they want to - it only stops Windows demanding it. -->
+            <FirstLogonCommands>
+                <SynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <CommandLine>cmd /c net accounts /maxpwage:unlimited</CommandLine>
+                    <Description>Remove the maximum password age</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-LocalUser | Where-Object Enabled | Set-LocalUser -PasswordNeverExpires $true"</CommandLine>
+                    <Description>Password never expires (PowerShell)</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <CommandLine>cmd /c wmic useraccount where "name='User'" set PasswordExpires=FALSE</CommandLine>
+                    <Description>Password never expires (wmic fallback)</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+            </FirstLogonCommands>
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Home</NetworkLocation>
+                <ProtectYourPC>3</ProtectYourPC>
+            </OOBE>
+            <!-- Delete this whole <UserAccounts> block if your captured image
+                 already contains an account called "User". See the header. -->
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Password>
+                            <Value></Value>
+                            <PlainText>true</PlainText>
+                        </Password>
+                        <DisplayName>User</DisplayName>
+                        <Group>Administrators</Group>
+                        <Name>User</Name>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+        </component>
+
+    </settings>
+
+</unattend>
