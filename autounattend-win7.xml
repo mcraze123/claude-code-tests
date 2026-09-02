@@ -1,0 +1,291 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================================
+  autounattend.xml - WINDOWS 7 ONLY
+  Windows 7 SP1, x86 and x64, from ONE file.
+  ============================================================================
+
+  READ THIS FIRST - WHY THIS IS A SEPARATE FILE
+    The 8/8.1/10/11 answer file will NOT work on Windows 7. It fails with
+    "Windows could not parse or process the unattend answer file" because
+    <HideOnlineAccountScreens> does not exist in the Windows 7 OOBE schema,
+    and Setup rejects an element it does not recognise inside a component it
+    does recognise. Several other settings in that file are also Win 8+ only
+    or are pointless on 7. So: two files, one per era. Do not mix them.
+
+  ONE FILE, BOTH ARCHITECTURES - BUT TWO STICKS
+    Every component below appears twice, once with
+    processorArchitecture="amd64" and once with "x86". Setup ignores whichever
+    copy does not match the environment it booted, exactly as on 8/10/11, so
+    this single file is correct on both.
+    HOWEVER: Windows 7 has no dual-architecture install media. There is no
+    "Both" option like the Media Creation Tool gives you - the x86 and x64
+    ISOs are separate. So you will have two USB sticks (or one Ventoy stick
+    holding both ISOs), and you copy this same file to each one. The file is
+    universal; the media is not.
+
+  WHAT IT DOES
+    - Accepts the EULA
+    - Skips the product key page (see the PRODUCT KEY note below - this
+      behaves differently from 8/10/11, read it)
+    - Sets locale to en-US and skips the region / keyboard OOBE pages
+    - Sets time zone to Eastern (handles EST/EDT automatically)
+    - Random computer name
+    - Creates local account "User", blank password, in Administrators
+    - Stops Windows ever demanding a password change (same 42-day problem
+      as Windows 10 - see the PASSWORD EXPIRATION block below)
+
+  WHAT IT DELIBERATELY LEAVES MANUAL
+    - Disk / partition selection. No <DiskConfiguration> or <ImageInstall>
+      block, so "Where do you want to install Windows?" prompts normally.
+      This is intentional: nothing here can wipe a disk unattended.
+    - Edition selection, if install.wim has multiple editions.
+    - Clicking "Install now" on the first screen (unattend cannot skip this).
+
+  PRODUCT KEY - THIS IS THE ONE REAL DIFFERENCE FROM 8/10/11
+    Windows 7 predates the firmware-embedded product key (the ACPI/MSDM
+    table). That mechanism arrived with Windows 8. So on Windows 7 there is
+    NO key sitting in the BIOS for Setup to find - the empty <Key/> here just
+    skips the key page, it does not silently activate anything. You will
+    still need to enter the key from the COA sticker (or use the OEM SLP key
+    plus certificate if you are doing a proper OEM-channel refurb) before the
+    30-day grace period runs out.
+    <WillShowUI>OnError</WillShowUI> is the safety net: if the blank key is
+    rejected for any reason, Setup shows the key page instead of dying.
+
+  WHAT IS NOT HERE, AND WHY
+    - The LabConfig TPM / Secure Boot / RAM / CPU / Storage bypasses. Those
+      exist only for the Windows 11 hardware check. Windows 7 Setup has no
+      such check, so they were pure noise and are removed.
+    - BypassNRO. That is the Windows 11 22H2+ "you must use a Microsoft
+      account" workaround. Windows 7 has no online account requirement at
+      all, so it is removed.
+    - HideOnlineAccountScreens. Windows 8+ only. This is the element that
+      makes the other file fail on 7.
+    - HideOEMRegistrationScreen. Left out deliberately: retail Windows 7
+      media has no OEM registration screen to hide, so it would do nothing,
+      and leaving it out removes one more thing that could trip the parser.
+    - Set-LocalUser. The PowerShell LocalAccounts module does not exist on
+      Windows 7 (PowerShell 2.0), so the password fix uses net accounts and
+      wmic, both of which are present on 7.
+
+  HOW TO INSTALL IT ON THE USB
+    Copy this file, named exactly autounattend.xml (NOT
+    autounattend-win7.xml), to the ROOT of the stick. Do this on both the
+    x86 stick and the x64 stick.
+
+  PRACTICAL REFURB NOTE
+    Windows 7 install media has no built-in USB 3.0 or NVMe drivers. On any
+    machine newer than roughly 2015 Setup will boot and then complain about
+    missing drivers, or lose the USB stick partway through. That is a media
+    problem, not an answer-file problem - this file cannot fix it. Use a
+    USB 2.0 port where one exists, or slipstream the drivers into the image.
+
+  CUSTOMISING
+    - Username: change <DisplayName> and <Name> (4 places: amd64 + x86).
+      If you rename the account, also change "name='User'" in the Order 2
+      command of FirstLogonCommands (2 places: amd64 + x86).
+    - Password: put it in <Value> and keep <PlainText>true</PlainText>.
+    - Time zone: replace "Eastern Standard Time" (Windows TZ ID, not Olson).
+    - Locale: replace en-US throughout.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+    <!-- ==================================================================
+         PASS 1: windowsPE - runs inside the Setup boot environment
+         ================================================================== -->
+    <settings pass="windowsPE">
+
+        <!-- ========================= amd64 ========================= -->
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <SetupUILanguage>
+                <UILanguage>en-US</UILanguage>
+            </SetupUILanguage>
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <UserData>
+                <!-- <Key> is REQUIRED even when empty. <WillShowUI>OnError
+                     falls back to the normal key page rather than failing the
+                     install if the blank key is refused. See the PRODUCT KEY
+                     note in the header - Windows 7 has no BIOS key. -->
+                <ProductKey>
+                    <Key></Key>
+                    <WillShowUI>OnError</WillShowUI>
+                </ProductKey>
+                <AcceptEula>true</AcceptEula>
+            </UserData>
+        </component>
+
+        <!-- ========================== x86 ========================== -->
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <SetupUILanguage>
+                <UILanguage>en-US</UILanguage>
+            </SetupUILanguage>
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Setup" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <UserData>
+                <ProductKey>
+                    <Key></Key>
+                    <WillShowUI>OnError</WillShowUI>
+                </ProductKey>
+                <AcceptEula>true</AcceptEula>
+            </UserData>
+        </component>
+
+    </settings>
+
+    <!-- ==================================================================
+         PASS 2: specialize - runs after the image is applied, before OOBE
+         ================================================================== -->
+    <settings pass="specialize">
+
+        <!-- ========================= amd64 ========================= -->
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- "*" = let Windows generate a random name. On 7 this comes out
+                 as WIN-XXXXXXXXXXX rather than the DESKTOP-XXXXXXX you see
+                 on 10/11. -->
+            <ComputerName>*</ComputerName>
+            <TimeZone>Eastern Standard Time</TimeZone>
+        </component>
+
+        <!-- ========================== x86 ========================== -->
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <ComputerName>*</ComputerName>
+            <TimeZone>Eastern Standard Time</TimeZone>
+        </component>
+
+    </settings>
+
+    <!-- ==================================================================
+         PASS 3: oobeSystem - the first-boot out-of-box experience
+         ================================================================== -->
+    <settings pass="oobeSystem">
+
+        <!-- ========================= amd64 ========================= -->
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- Present so OOBE does not ask "Is this the right country?"
+                 and "Is this the right keyboard layout?" -->
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- ============================================================
+                 PASSWORD EXPIRATION - runs at the first logon of "User"
+                 ============================================================
+                 Windows 7 has the same 42-day default maximum password age as
+                 10 and 11, and an account created by an answer file does NOT
+                 get the "password never expires" flag that an account created
+                 by hand in OOBE gets. So it would nag, then force, a password
+                 change part way through the refurb. These two commands
+                 remove that.
+
+                 1. net accounts - clears the machine-wide maximum password
+                    age. This is the one that matters, and it also covers any
+                    extra account made later.
+                 2. wmic         - the per-account "password never expires"
+                    flag. On 10/11 this job is done by Set-LocalUser, which
+                    does not exist on Windows 7's PowerShell 2.0, so 7 uses
+                    wmic, which is present on every Windows 7 install.
+
+                 Nothing here stops the customer changing the password when
+                 they feel like it - it only stops Windows demanding it. -->
+            <FirstLogonCommands>
+                <SynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <CommandLine>cmd /c net accounts /maxpwage:unlimited</CommandLine>
+                    <Description>Remove the maximum password age</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <CommandLine>cmd /c wmic useraccount where "name='User'" set PasswordExpires=FALSE</CommandLine>
+                    <Description>Password never expires</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+            </FirstLogonCommands>
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Home</NetworkLocation>
+                <ProtectYourPC>3</ProtectYourPC>
+            </OOBE>
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Password>
+                            <Value></Value>
+                            <PlainText>true</PlainText>
+                        </Password>
+                        <DisplayName>User</DisplayName>
+                        <Group>Administrators</Group>
+                        <Name>User</Name>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+        </component>
+
+        <!-- ========================== x86 ========================== -->
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <!-- Same password-expiry fix as the amd64 block above. -->
+            <FirstLogonCommands>
+                <SynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <CommandLine>cmd /c net accounts /maxpwage:unlimited</CommandLine>
+                    <Description>Remove the maximum password age</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+                <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <CommandLine>cmd /c wmic useraccount where "name='User'" set PasswordExpires=FALSE</CommandLine>
+                    <Description>Password never expires</Description>
+                    <RequiresUserInput>false</RequiresUserInput>
+                </SynchronousCommand>
+            </FirstLogonCommands>
+            <OOBE>
+                <HideEULAPage>true</HideEULAPage>
+                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <NetworkLocation>Home</NetworkLocation>
+                <ProtectYourPC>3</ProtectYourPC>
+            </OOBE>
+            <UserAccounts>
+                <LocalAccounts>
+                    <LocalAccount wcm:action="add">
+                        <Password>
+                            <Value></Value>
+                            <PlainText>true</PlainText>
+                        </Password>
+                        <DisplayName>User</DisplayName>
+                        <Group>Administrators</Group>
+                        <Name>User</Name>
+                    </LocalAccount>
+                </LocalAccounts>
+            </UserAccounts>
+        </component>
+
+    </settings>
+
+</unattend>
