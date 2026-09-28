@@ -57,9 +57,9 @@
     - The LabConfig TPM / Secure Boot / RAM / CPU / Storage bypasses. Those
       exist only for the Windows 11 hardware check. Windows 7 Setup has no
       such check, so they were pure noise and are removed.
-    - BypassNRO. That is the Windows 11 22H2+ "you must use a Microsoft
-      account" workaround. Windows 7 has no online account requirement at
-      all, so it is removed.
+    - BypassNRO. That was the Windows 11 "you must use a Microsoft account"
+      workaround (and Microsoft has since killed it anyway). Windows 7 has no
+      online account requirement at all, so it is removed.
     - HideOnlineAccountScreens. Windows 8+ only. This is the element that
       makes the other file fail on 7.
     - HideOEMRegistrationScreen. Left out deliberately: retail Windows 7

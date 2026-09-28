@@ -15,8 +15,10 @@
     - Sets time zone to Eastern (handles EST/EDT automatically)
     - Random computer name
     - Creates local account "User", blank password, in Administrators
-    - Skips the Microsoft-account requirement (HideOnlineAccountScreens plus
-      the BypassNRO registry value, which is what actually works on Win 11 22H2+)
+    - Skips the Microsoft-account requirement, by creating the account in the
+      answer file before OOBE can ask (see the BypassNRO comment in the
+      specialize pass - that registry value no longer does the work on
+      current Win 11, but the local account block still does)
     - Stops Windows ever demanding a password change on the account it
       creates (see the FirstLogonCommands block in the oobeSystem pass).
       The customer can still change it whenever they want.
@@ -29,6 +31,18 @@
       This is intentional: nothing here can wipe a disk unattended.
     - Edition selection, if install.wim/esd has multiple editions.
     - Clicking "Install now" on the first screen (unattend cannot skip this).
+
+  EDITIONS - HOME, PRO, ENTERPRISE, EDUCATION
+    This file works on all of them, unchanged. Nothing in it is
+    edition-specific: every component it uses (International-Core,
+    Shell-Setup, Deployment, Setup) exists in every edition of every version
+    listed above. Edition only enters the picture through the product key,
+    which is why leaving <Key> empty is what keeps this file universal.
+
+    The one thing that would break edition-universality if you ever added it
+    is a domain join (Microsoft-Windows-UnattendedJoin). That component does
+    not exist on Home. Same for anything that depends on Group Policy or
+    BitLocker. None of it is here.
 
   WHY EVERY COMPONENT APPEARS TWICE
     Each <component> is duplicated with processorArchitecture="amd64" and
@@ -167,8 +181,22 @@
 
         <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <RunSynchronous>
-                <!-- Lets OOBE offer a local account without an internet
-                     connection. Required on Win 11 22H2+; inert on 8/10. -->
+                <!-- Was the way to make OOBE offer a local account without an
+                     internet connection. Inert on 8/10, and as of Win 11 25H2
+                     inert there too: Microsoft has killed BypassNRO along
+                     with "ms-cxh:localonly" and the fake-email trick. Left in
+                     because it still helps on 22H2/23H2 and costs nothing on
+                     builds that ignore it.
+
+                     It is NOT what gets you a local account on current
+                     Win 11. The <UserAccounts><LocalAccounts> block in the
+                     oobeSystem pass is. That still works because the answer
+                     file creates the account during installation, so OOBE
+                     never reaches the screen that would demand a Microsoft
+                     account. Do not delete that block thinking this command
+                     covers you - on Windows 11 HOME it is the only reliable
+                     route to a local account, because Home has no "join a
+                     domain instead" escape hatch the way Pro does. -->
                 <RunSynchronousCommand wcm:action="add">
                     <Order>1</Order>
                     <Path>reg.exe add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v BypassNRO /t REG_DWORD /d 1 /f</Path>
