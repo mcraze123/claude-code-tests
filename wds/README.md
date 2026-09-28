@@ -33,7 +33,40 @@ settings live in the image unattends and the client unattends are near-empty.
 
 **Client unattend** — copy both files to `C:\RemoteInstall\WdsClientUnattend\`
 on the server. Right-click the server → Properties → Client tab → tick
-"Enable unattended installation" → Browse next to x86 and x64 → OK.
+"Enable unattended installation" → Browse next to each architecture → OK.
+
+The Client tab lists separate slots for legacy/BIOS and UEFI for each
+architecture. **Assign the same file to both slots:**
+
+| Slot | File |
+|---|---|
+| x86 (Legacy/BIOS) | `client-unattend-x86.xml` |
+| x86 (UEFI) | `client-unattend-x86.xml` |
+| x64 (Legacy/BIOS) | `client-unattend-x64.xml` |
+| x64 (UEFI) | `client-unattend-x64.xml` |
+
+`processorArchitecture` refers to the CPU, not the firmware, and nothing in an
+answer file's schema is BIOS- or UEFI-specific. The split exists so WDS knows
+which file to hand a client based on how that client booted — it is a delivery
+distinction, not a file-format one.
+
+The reason WDS bothers to separate them is `<DiskConfiguration>`: BIOS/MBR and
+UEFI/GPT need completely different partition layouts, so anyone automating
+partitioning genuinely needs two different files. These files contain no
+`<DiskConfiguration>` at all, so there is nothing firmware-dependent in them
+and one file per architecture covers both slots. If you ever add automated
+partitioning, that is the point at which you must split them.
+
+The image unattends have no legacy/UEFI distinction — they are assigned per
+image, and `specialize`/`oobeSystem` run long after firmware stopped mattering.
+
+Two notes for older hardware:
+
+- **Windows 7 32-bit cannot UEFI boot at all**; only x64 Windows 7 supports
+  UEFI. The x86 (UEFI) slot is effectively dead weight for Windows 7 work.
+  Fill it in anyway for consistency — it costs nothing.
+- **Windows 7 x64 over UEFI needs Secure Boot disabled** in firmware. Windows 7
+  predates Secure Boot and will not boot with it enabled.
 
 **Image unattend** — Install Images → your image group → right-click an image →
 Properties → General → tick "Allow image to install in unattended mode" →
