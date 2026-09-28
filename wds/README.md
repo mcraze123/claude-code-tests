@@ -16,6 +16,7 @@ image-unattend-win81-x64.xml
 image-unattend-win10-x86.xml
 image-unattend-win10-x64.xml
 image-unattend-win10-arm64.xml
+image-unattend-win11-x64.xml     not deployable by plain WDS - see below
 image-unattend-win11-arm64.xml   not deployable by plain WDS - see below
 ```
 
@@ -197,14 +198,13 @@ can deploy. Windows 11 dropped 32-bit ARM entirely, so nothing new will need it.
 There is no image unattend for 32-bit ARM, because there is no image to assign
 one to.
 
-## Windows 11 is not here
+## Windows 11 is here, but plain WDS cannot deploy it
 
-(More precisely: there is no *deployable* Windows 11 here. `image-unattend-
-win11-arm64.xml` exists because the ARM64 image is on the server, but plain WDS
-cannot push it — see below. There is no x64 Windows 11 image unattend yet; ask
-if you want one for the USB/ADK route.)
+Both `image-unattend-win11-x64.xml` and `image-unattend-win11-arm64.xml` exist,
+because both images are on the server. They are correct files. What they are not
+is deployable by the WDS console's own image deployment.
 
-There is no 32-bit Windows 11, so the per-architecture pattern doesn't apply.
+There is no 32-bit Windows 11, so that architecture is absent.
 More importantly, starting with Windows 11 Microsoft blocks
 `boot.wim` from installation media and blocks running Windows Setup in "WDS
 mode" — the exact flow plain WDS uses to deploy an install image. PXE-booting
@@ -215,7 +215,16 @@ Note that MDT is *not* the escape hatch: it isn't supported with Windows 11 or
 with the Windows 11 ADK. Microsoft points at Configuration Manager, Autopilot,
 or a hand-rolled WinPE workflow instead.
 
-Use the USB `autounattend.xml` at the repository root for Windows 11.
+So these two files apply when you deploy those images by some route other than
+plain WDS image deployment: a custom WinPE boot image built with the Windows
+ADK, Configuration Manager, or applying the WIM by hand with DISM.
+
+**For a Windows 11 USB stick, use `autounattend.xml` at the repository root
+instead — not these files.** That is a different kind of file: all three passes
+including `windowsPE`, both architectures in one file, and it goes at the root
+of the stick. An image unattend has no `windowsPE` pass and only one
+architecture, so it is not a substitute, and neither is the USB file a
+substitute for it.
 
 ## Sources
 

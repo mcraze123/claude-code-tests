@@ -72,9 +72,17 @@
             <TimeZone>Eastern Standard Time</TimeZone>
         </component>
 
-        <!-- Lets OOBE offer a local account without an internet connection.
-             Needed on Windows 10 builds that pester for a Microsoft account;
-             harmless on the ones that do not. -->
+        <!-- Was the way to make OOBE offer a local account without an
+             internet connection. Microsoft has since blocked BypassNRO on
+             Windows 11 25H2, along with "ms-cxh:localonly" and the fake-email
+             trick. Kept because it still helps on older builds and is inert on
+             the rest.
+
+             It is not what produces the local account. The <UserAccounts>
+             block further down is - the answer file creates the account during
+             installation, so OOBE never reaches the screen that would demand a
+             Microsoft account. Do not delete that block thinking this command
+             covers you. -->
         <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <RunSynchronous>
                 <RunSynchronousCommand wcm:action="add">

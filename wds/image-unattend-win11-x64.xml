@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   ============================================================================
-  WDS IMAGE UNATTEND - Windows 10, x86 (32-bit)
+  WDS IMAGE UNATTEND - Windows 11, x64 (64-bit)
   ============================================================================
 
   WHAT THIS FILE IS
@@ -11,17 +11,29 @@
     the USB autounattend.xml.
 
     It deliberately contains NO windowsPE pass. On WDS that half of the job
-    belongs to the *client* unattend (client-unattend-x86.xml), which
+    belongs to the *client* unattend (client-unattend-x64.xml), which
     is assigned once at server level, not per image. Putting a windowsPE pass
     in here would simply be ignored.
 
   HOW TO ASSIGN IT (Server 2019 WDS console)
-    Install Images -> <your image group> -> right-click the Windows 10
-    x86 (32-bit) image -> Properties -> General tab
+    Install Images -> <your image group> -> right-click the Windows 11
+    x64 (64-bit) image -> Properties -> General tab
     -> tick "Allow image to install in unattended mode"
     -> Select File... -> browse to this file -> OK.
     WDS copies it into the per-image \Unattend folder under RemoteInstall.
     Assign it to that one image only - the architecture below must match.
+
+  !! PLAIN WDS CANNOT DEPLOY THIS IMAGE !!
+    From Windows 11 onward Microsoft blocks boot.wim taken from installation
+    media and blocks running Windows Setup in "WDS mode" - which is exactly the
+    flow the WDS console uses to push an install image. Adding the image to the
+    server works; deploying it the normal way does not.
+
+    This file is still correct and still worth having. It applies when you
+    deploy that image by some route other than plain WDS image deployment - a
+    custom ARM64 WinPE boot image built with the Windows ADK, Configuration
+    Manager, or applying the WIM by hand with DISM. It is also the file to
+    reuse if you build a Windows 11 ARM64 USB stick.
 
   !! READ THIS BEFORE YOU DEPLOY - THE ACCOUNT CLASH !!
     This file creates a local account called "User" during OOBE. If the
@@ -65,7 +77,7 @@
          ================================================================== -->
     <settings pass="specialize">
 
-        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <!-- "*" = let Windows generate a random name. Change this to a
                  fixed name only if you assign this file to one machine. -->
             <ComputerName>*</ComputerName>
@@ -83,7 +95,7 @@
              installation, so OOBE never reaches the screen that would demand a
              Microsoft account. Do not delete that block thinking this command
              covers you. -->
-        <component name="Microsoft-Windows-Deployment" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+        <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <RunSynchronous>
                 <RunSynchronousCommand wcm:action="add">
                     <Order>1</Order>
@@ -99,7 +111,7 @@
          ================================================================== -->
     <settings pass="oobeSystem">
 
-        <component name="Microsoft-Windows-International-Core" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+        <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <!-- Present so OOBE does not ask "Is this the right country?"
                  and "Is this the right keyboard layout?" -->
             <InputLocale>en-US</InputLocale>
@@ -109,7 +121,7 @@
             <UserLocale>en-US</UserLocale>
         </component>
 
-        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="x86" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+        <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <!-- ============================================================
                  PASSWORD EXPIRATION - runs at the first logon of "User"
                  ============================================================
@@ -122,8 +134,10 @@
                  "net accounts" clears the machine-wide maximum password age.
                  That is the command that actually matters, it works on every
                  Windows version, and it covers any extra account made later.
-                 Windows 10 has both, so the PowerShell call runs first and the
-                 wmic call is a fallback in case it is unavailable.
+                 Windows 11 has the PowerShell LocalAccounts module, so that call
+                 does the per-account work. wmic is only a fallback and on recent
+                 builds it may be absent entirely - that is fine, it fails and
+                 OOBE moves on.
 
                  None of this stops the customer changing the password when
                  they want to - it only stops Windows demanding it. -->
