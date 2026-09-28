@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================================
+  WDS CLIENT UNATTEND - ARM (32-bit)
+  ============================================================================
+
+  WHAT THIS FILE IS
+    A WDS *client* unattend file. It carries the windowsPE pass only - the
+    phase that runs inside the WinPE boot image after the machine PXE-boots,
+    before any image is applied. Its job is to automate the WDS client
+    screens.
+
+  IT IS NOT PER-IMAGE
+    WDS allows exactly ONE client unattend per architecture per server. This
+    file is therefore shared by every ARM (32-bit) image you deploy -
+    Windows 7, 8.1 and 10 alike. That is why it contains nothing
+    version-specific. Everything version-specific lives in the per-image
+    files (image-unattend-*.xml).
+
+  HOW TO ASSIGN IT (Server 2019 WDS console)
+    Copy this file to  C:\RemoteInstall\WdsClientUnattend\  on the server,
+    then: right-click the server -> Properties -> Client tab
+    -> tick "Enable unattended installation"
+    -> next to ARM (32-bit) click Browse... and pick this file -> OK.
+
+  THIS FILE IS FOR COMPLETENESS AND WILL ALMOST CERTAINLY NEVER RUN
+    "arm" here means 32-bit ARM (ARMv7) - Windows RT. You were right that you
+    could not find an installer: Microsoft never released Windows RT as
+    installation media. It shipped preinstalled only, on Surface RT, Surface 2
+    and a handful of OEM tablets, with a locked bootloader and Secure Boot that
+    cannot be turned off. There is no official ISO to add to WDS, and the
+    hardware will not boot an image you supply.
+
+    The only 32-bit ARM Windows you will ever come across is an unofficial
+    community build - people have repacked Windows 10 ARM32 to run on Surface RT
+    hardware. That is a hobbyist project, not something WDS can deploy.
+
+    So: keep this file for symmetry, assign it if your console offers an ARM
+    slot, and expect it to sit unused. Windows 11 dropped 32-bit ARM support
+    entirely, so nothing new will ever need it.
+
+    If you meant ARM64 - the Lenovo Yoga and every current Windows-on-ARM
+    machine - that is client-unattend-arm64.xml, not this file.
+
+  WHAT IT DOES
+    Sets the WinPE locale so the client skips the "choose your locale and
+    keyboard" screen that WDS shows before the logon prompt. That is all.
+
+  WHAT IT DELIBERATELY DOES NOT DO
+    - No <Credentials>. You will be prompted for domain credentials at the
+      client, which is the safer behaviour. A credentials block here is
+      stored in PLAIN TEXT on the server and sent to the client over the
+      network. If you accept that and want it anyway, uncomment the block
+      below and fill it in - but read wds/README.md first, because there is
+      a live CVE about exactly this.
+    - No <ImageSelection>. You pick the image at the client. If you set it,
+      WDS also requires <InstallTo>, which in turn requires a
+      <DiskConfiguration> that partitions the disk automatically - and that
+      wipes the target without asking. Left out on purpose, same as the USB
+      answer files.
+    - No <DiskConfiguration>. "Where do you want to install Windows?" prompts
+      normally. Nothing in this file can wipe a disk unattended.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+    <settings pass="windowsPE">
+
+        <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="arm" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <SetupUILanguage>
+                <UILanguage>en-US</UILanguage>
+            </SetupUILanguage>
+            <InputLocale>en-US</InputLocale>
+            <SystemLocale>en-US</SystemLocale>
+            <UILanguage>en-US</UILanguage>
+            <UILanguageFallback>en-US</UILanguageFallback>
+            <UserLocale>en-US</UserLocale>
+        </component>
+
+        <!-- Uncomment to log the WDS client in automatically. Plain text on
+             disk and on the wire - see wds/README.md.
+        <component name="Microsoft-Windows-Setup" processorArchitecture="arm" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <WindowsDeploymentServices>
+                <Login>
+                    <Credentials>
+                        <Domain>YOURDOMAIN</Domain>
+                        <Username>wdsuser</Username>
+                        <Password>changeme</Password>
+                    </Credentials>
+                </Login>
+            </WindowsDeploymentServices>
+        </component>
+        -->
+
+    </settings>
+
+</unattend>
